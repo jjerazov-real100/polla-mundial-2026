@@ -481,9 +481,9 @@ client_email = "..."
         if pred_df.empty:
             st.info("Aún no hay predicciones cargadas.")
         else:
-            from datetime import timezone
-            ahora = datetime.now()
-
+            from zoneinfo import ZoneInfo
+            tz_col = ZoneInfo("America/Bogota")
+            ahora = datetime.now(tz_col).replace(tzinfo=None)
             # Identificar qué partido_ids ya están desbloqueados
             # (faltan ≤10 min para el partido o ya pasó)
             def partido_desbloqueado(partido_id):
