@@ -390,7 +390,7 @@ client_email = "..."
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario"])
 
     with tab1:
         st.markdown("### Clasificación general")
@@ -434,11 +434,17 @@ client_email = "..."
         else:
             # Merge con nombres de partidos
             if not part_df.empty and "partido_id" in part_df.columns:
+                hora_col = [c for c in part_df.columns if "hora" in c.lower()]
+                cols_merge = ["partido_id", "local", "visita"] + hora_col
                 det_df = det_df.merge(
-                    part_df[["partido_id", "local", "visita"]],
+                    part_df[cols_merge],
                     on="partido_id", how="left"
                 )
-                det_df["Partido"] = det_df["local"] + " vs " + det_df["visita"]
+                hora_col2 = [c for c in det_df.columns if "hora" in c.lower()]
+                if hora_col2:
+                    det_df["Partido"] = det_df["local"] + " vs " + det_df["visita"] + " (" + det_df[hora_col2[0]].fillna("").astype(str) + ")"
+                else:
+                    det_df["Partido"] = det_df["local"] + " vs " + det_df["visita"]
             else:
                 det_df["Partido"] = det_df["partido_id"]
 
@@ -556,7 +562,87 @@ client_email = "..."
             </table>
             """, unsafe_allow_html=True)
 
-    # Footer
+    with tab5:
+        st.markdown("### Calendario Mundial 2026")
+        if part_df.empty:
+            st.info("No hay partidos cargados.")
+        else:
+            from zoneinfo import ZoneInfo
+            ahora_cal = datetime.now(ZoneInfo("America/Bogota")).replace(tzinfo=None)
+
+            fases_orden = ["Grupos", "16avos", "Octavos", "Cuartos", "Semifinal", "3er Puesto", "Final"]
+            fase_col = [c for c in part_df.columns if "fase" in c.lower()]
+            hora_col_cal = [c for c in part_df.columns if "hora" in c.lower()]
+
+            filtro_fase = st.selectbox("Filtrar por fase", ["Todas"] + fases_orden)
+
+            df_cal = part_df.copy()
+            if filtro_fase != "Todas" and fase_col:
+                df_cal = df_cal[df_cal[fase_col[0]] == filtro_fase]
+
+            if not res_df.empty:
+                df_cal = df_cal.merge(
+                    res_df[["partido_id", "goles_local", "goles_visita"]],
+                    on="partido_id", how="left"
+                )
+
+            fechas = sorted(df_cal["fecha"].unique())
+
+            for fecha in fechas:
+                partidos_dia = df_cal[df_cal["fecha"] == fecha]
+                st.markdown(f"""
+                <div style="margin-top:20px; margin-bottom:8px;">
+                    <span style="background:#1e3a8a; color:#93c5fd; padding:4px 14px;
+                                 border-radius:20px; font-size:12px; font-weight:600;">
+                        📅 {fecha}
+                    </span>
+                </div>
+                """, unsafe_allow_html=True)
+
+                rows_html = ""
+                for _, p in partidos_dia.iterrows():
+                    hora = p[hora_col_cal[0]] if hora_col_cal and p.get(hora_col_cal[0]) else ""
+                    grupo = p.get("grupo", "")
+                    sede = p.get("sede", "")
+
+                    try:
+                        dt_p = datetime.strptime(f"{p['fecha']} {hora}", "%Y-%m-%d %H:%M") if hora else None
+                        jugado = dt_p and ahora_cal > dt_p
+                        en_curso = dt_p and timedelta(0) <= ahora_cal - dt_p <= timedelta(hours=2)
+                    except:
+                        jugado = False
+                        en_curso = False
+
+                    gl = p.get("goles_local", "")
+                    gv = p.get("goles_visita", "")
+                    resultado_html = ""
+                    if gl != "" and gv != "" and str(gl) != "nan":
+                        resultado_html = f'<span style="background:#0f2a1a; border:1px solid #1a5c36; color:#4ade80; border-radius:6px; padding:2px 10px; font-family:monospace; font-size:14px; font-weight:700;">{int(float(gl))}-{int(float(gv))}</span>'
+                    elif en_curso:
+                        resultado_html = '<span style="background:#3d1a00; color:#f97316; border-radius:6px; padding:2px 10px; font-size:12px; font-weight:600;">EN VIVO</span>'
+                    else:
+                        resultado_html = f'<span style="color:#6b7280; font-size:13px;">{hora} COL</span>'
+
+                    grupo_badge = f'<span style="background:#1a1f3a; color:#8891b4; border-radius:4px; padding:1px 7px; font-size:11px;">Grupo {grupo}</span>' if grupo else ""
+
+                    rows_html += f"""
+                    <tr>
+                        <td style="color:#8891b4; font-size:12px; white-space:nowrap;">{hora}</td>
+                        <td style="font-weight:600; color:#ffffff;">{p['local']}</td>
+                        <td style="text-align:center; color:#8891b4;">vs</td>
+                        <td style="font-weight:600; color:#ffffff;">{p['visita']}</td>
+                        <td style="text-align:center;">{resultado_html}</td>
+                        <td style="text-align:right; color:#6b7280; font-size:11px;">{sede}</td>
+                        <td style="text-align:right;">{grupo_badge}</td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
+                    <tbody>{rows_html}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+        # Footer
     st.markdown(f"""
     <div style="text-align:center; margin-top:3rem; color:#4b5563; font-size:12px;">
         Actualizado cada 60 seg · {datetime.now().strftime('%d/%m/%Y %H:%M')}
