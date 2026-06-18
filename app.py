@@ -166,60 +166,21 @@ def load_sheet(spreadsheet_id: str):
 
 
 # ── Lógica de puntuación ─────────────────────────────────────────────────────
-def calcular_puntos(pred_local, pred_visita, real_local, real_visita):
+def _puntos_limpio(pl, pv, rl, rv):
     """
-    Retorna el total de puntos para una predicción vs resultado real.
+    Calcula puntos para una predicción vs resultado real (máximo 10).
 
-    Reglas (acumulables, máximo 10):
       - Selección del ganador (o empate): 4 pts
-      - Diferencia de gol exacta:         2 pts
+      - Diferencia de gol exacta:          2 pts
       - Goles equipo local exactos:        1 pt
       - Goles equipo visita exactos:       1 pt
-      - Marcador exacto (ambos):           2 pts  ← ya incluye los 2×1 de arriba
+      - Marcador exacto (bono):            2 pts
     """
     try:
-        pl, pv = int(pred_local), int(pred_visita)
-        rl, rv = int(real_local), int(real_visita)
+        pl, pv, rl, rv = int(pl), int(pv), int(rl), int(rv)
     except (ValueError, TypeError):
         return 0
 
-    puntos = 0
-
-    # 4 pts — ganador / empate
-    pred_resultado = "L" if pl > pv else ("V" if pl < pv else "E")
-    real_resultado = "L" if rl > rv else ("V" if rl < rv else "E")
-    if pred_resultado == real_resultado:
-        puntos += 4
-
-    # 2 pts — diferencia de gol
-    if (pl - pv) == (rl - rv):
-        puntos += 2
-
-    # 1 pt por equipo con goles exactos
-    if pl == rl:
-        puntos += 1
-    if pv == rv:
-        puntos += 1
-
-    # 2 pts — marcador exacto (reemplaza el cálculo anterior de 1+1)
-    # Solo si no los sumamos ya individualmente y el marcador es idéntico
-    if pl == rl and pv == rv:
-        # Los 2 pts de marcador exacto SUSTITUYEN los 2×1 pt de goles
-        # ya sumados arriba, entonces añadimos los 2 pts y restamos los
-        # 2×1 que ya contabilizamos → neto +0 extra sobre los 1+1.
-        # La regla real: exacto da 2 pts ADEMÁS de ganador+diferencia.
-        # Reemplazamos los 1+1 por un bono de 2 para llegar a 10 máx.
-        puntos = puntos  # 4 + 2 + 1 + 1 = 8, marcador exacto ya incluido
-        # Ajuste: bono extra de marcador exacto para llegar a 10
-        # (el enunciado dice máximo 10 = 4+2+2+1+1, así que marcador exacto
-        #  vale 2 pts independientes de los goles individuales)
-        pass  # ya tenemos 8; los 2 de marcador se suman a continuación
-
-    # Recalculamos limpio para evitar confusión:
-    return _puntos_limpio(pl, pv, rl, rv)
-
-
-def _puntos_limpio(pl, pv, rl, rv):
     pts = 0
 
     # Ganador/empate: 4 pts
@@ -249,7 +210,7 @@ def _puntos_limpio(pl, pv, rl, rv):
 def calcular_ranking(pred_df, res_df):
     """Calcula el ranking general cruzando predicciones con resultados reales."""
     if pred_df.empty or res_df.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
     # res_df debe tener: partido_id, goles_local, goles_visita
     resultados_dict = {
@@ -266,6 +227,10 @@ def calcular_ranking(pred_df, res_df):
         partido_id   = row["partido_id"]
 
         if partido_id not in resultados_dict:
+            continue
+
+        # Si el participante no llenó su predicción, no cuenta como jugado
+        if row.get("pred_local") == "" or row.get("pred_visita") == "":
             continue
 
         rl, rv = resultados_dict[partido_id]
@@ -359,7 +324,9 @@ client_email = "..."
     rank_df, det_df = calcular_ranking(pred_df, res_df)
 
     # ── Métricas superiores ───────────────────────────────────────────────
-    partidos_jugados = len(res_df[res_df["goles_local"] != ""]) if not res_df.empty else 0
+    partidos_jugados = len(
+        res_df[(res_df["goles_local"] != "") & (res_df["goles_local"].notna())]
+    ) if not res_df.empty else 0
     total_partidos   = len(part_df) if not part_df.empty else 0
     total_participantes = pred_df["participante"].nunique() if not pred_df.empty else 0
 
@@ -390,7 +357,7 @@ client_email = "..."
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día"])
 
     with tab1:
         st.markdown("### Clasificación general")
@@ -544,13 +511,17 @@ client_email = "..."
                 puntos_html = '<span style="color:#6b7280;">—</span>'
 
                 if desbloqueado:
-                    pred = f'<span class="score-chip">{int(row["pred_local"])}-{int(row["pred_visita"])}</span>'
-                    estado = '<span style="color:#4ade80; font-size:12px;">🔓 Visible</span>'
+                    if row.get("pred_local") == "" or row.get("pred_visita") == "":
+                        pred = '<span style="color:#6b7280;">Sin enviar</span>'
+                        estado = '<span style="color:#f97316; font-size:12px;">⚠️ No registró</span>'
+                    else:
+                        pred = f'<span class="score-chip">{int(row["pred_local"])}-{int(row["pred_visita"])}</span>'
+                        estado = '<span style="color:#4ade80; font-size:12px;">🔓 Visible</span>'
 
-                    if row["partido_id"] in resultados_dict_p3:
-                        rl, rv = resultados_dict_p3[row["partido_id"]]
-                        pts = _puntos_limpio(int(row["pred_local"]), int(row["pred_visita"]), int(rl), int(rv))
-                        puntos_html = f'<span class="pts-badge">{pts} pts</span>' if pts > 0 else '<span class="pts-zero">0 pts</span>'
+                        if row["partido_id"] in resultados_dict_p3:
+                            rl, rv = resultados_dict_p3[row["partido_id"]]
+                            pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
+                            puntos_html = f'<span class="pts-badge">{pts} pts</span>' if pts > 0 else '<span class="pts-zero">0 pts</span>'
                 else:
                     pred = '<span style="color:#6b7280; font-size:18px;">🔒</span>'
                     estado = '<span style="color:#6b7280; font-size:12px;">Bloqueado</span>'
@@ -639,17 +610,22 @@ client_email = "..."
                 else:
                     rows_html_t4 = ""
                     for _, row in pred_partido.sort_values("participante").iterrows():
-                        pred = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
-                        pts_badge = ""
-                        if resultado_real:
-                            rl, rv = resultado_real.split("-")
-                            p = _puntos_limpio(int(row["pred_local"]), int(row["pred_visita"]), int(rl), int(rv))
-                            pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
+                        if row.get("pred_local") == "" or row.get("pred_visita") == "":
+                            pred = '<span style="color:#6b7280;">Sin enviar</span>'
+                            pts_badge = ""
+                        else:
+                            pred = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
+                            pred = f'<span class="score-chip">{pred}</span>'
+                            pts_badge = ""
+                            if resultado_real:
+                                rl, rv = resultado_real.split("-")
+                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
+                                pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
 
                         rows_html_t4 += f"""
                         <tr>
                             <td style="font-weight:500; color:#ffffff;">{row['participante']}</td>
-                            <td style="text-align:center;"><span class="score-chip">{pred}</span></td>
+                            <td style="text-align:center;">{pred}</td>
                             <td style="text-align:center;">{pts_badge}</td>
                         </tr>"""
 
@@ -746,7 +722,108 @@ client_email = "..."
                 </table>
                 """, unsafe_allow_html=True)
 
-        # Footer
+    with tab6:
+        st.markdown("### Pronósticos por día")
+        st.markdown(
+            "<p style='color:#8891b4; font-size:13px;'>Selecciona una fecha para ver todos los partidos de ese día junto con los pronósticos de todos los participantes (solo partidos ya desbloqueados).</p>",
+            unsafe_allow_html=True
+        )
+
+        if pred_df.empty or part_df.empty:
+            st.info("Aún no hay datos cargados.")
+        else:
+            from zoneinfo import ZoneInfo
+            ahora_t6 = datetime.now(ZoneInfo("America/Bogota")).replace(tzinfo=None)
+
+            def desbloqueado_t6(row):
+                try:
+                    hora = row.get("hora (COL)", "00:00") or "00:00"
+                    dt = datetime.strptime(f"{row['fecha']} {hora}", "%Y-%m-%d %H:%M")
+                    return ahora_t6 >= dt - timedelta(minutes=10)
+                except Exception:
+                    return False
+
+            fechas_t6 = sorted(part_df["fecha"].unique().tolist())
+            fecha_sel = st.selectbox("Selecciona una fecha", fechas_t6)
+
+            partidos_dia_t6 = part_df[part_df["fecha"] == fecha_sel].copy()
+            partidos_dia_t6 = partidos_dia_t6[partidos_dia_t6.apply(desbloqueado_t6, axis=1)]
+
+            if partidos_dia_t6.empty:
+                st.info("No hay partidos desbloqueados para este día todavía.")
+            else:
+                hora_col_t6 = [c for c in part_df.columns if "hora" in c.lower()]
+                orden_col = hora_col_t6[0] if hora_col_t6 else "fecha"
+                partidos_dia_t6 = partidos_dia_t6.sort_values(orden_col)
+
+                for _, part_info in partidos_dia_t6.iterrows():
+                    partido_id_t6 = part_info["partido_id"]
+                    hora_t6 = part_info.get(orden_col, "")
+
+                    res_info_t6 = res_df[res_df["partido_id"] == partido_id_t6] if not res_df.empty else pd.DataFrame()
+                    resultado_real_t6 = ""
+                    if not res_info_t6.empty and res_info_t6.iloc[0]["goles_local"] != "" and str(res_info_t6.iloc[0]["goles_local"]) != "nan":
+                        gl = res_info_t6.iloc[0]["goles_local"]
+                        gv = res_info_t6.iloc[0]["goles_visita"]
+                        resultado_real_t6 = f"{int(float(gl))}-{int(float(gv))}"
+
+                    st.markdown(f"""
+                    <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:12px;
+                                padding:16px 20px; text-align:center; margin-top:24px; margin-bottom:12px;">
+                        <div style="font-size:18px; font-weight:700; color:#ffffff;">
+                            {part_info['local']} vs {part_info['visita']}
+                        </div>
+                        <div style="color:#8891b4; font-size:12px; margin-top:2px;">
+                            {hora_t6} COL
+                        </div>
+                        {f'<div style="margin-top:8px; font-size:22px; font-weight:700; color:#4ade80;">Resultado: {resultado_real_t6}</div>' if resultado_real_t6 else '<div style="margin-top:6px; color:#6b7280; font-size:12px;">Partido aún no jugado</div>'}
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                    pred_partido_t6 = pred_df[pred_df["partido_id"] == partido_id_t6]
+
+                    if pred_partido_t6.empty:
+                        st.markdown(
+                            "<p style='color:#6b7280; font-size:13px; margin-left:4px;'>Nadie ha ingresado predicciones para este partido.</p>",
+                            unsafe_allow_html=True
+                        )
+                        continue
+
+                    rows_html_t6 = ""
+                    for _, row in pred_partido_t6.sort_values("participante").iterrows():
+                        if row.get("pred_local") == "" or row.get("pred_visita") == "":
+                            pred = '<span style="color:#6b7280;">Sin enviar</span>'
+                            pts_badge = ""
+                        else:
+                            pred = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
+                            pred = f'<span class="score-chip">{pred}</span>'
+                            pts_badge = ""
+                            if resultado_real_t6:
+                                rl, rv = resultado_real_t6.split("-")
+                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
+                                pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
+
+                        rows_html_t6 += f"""
+                        <tr>
+                            <td style="font-weight:500; color:#ffffff;">{row['participante']}</td>
+                            <td style="text-align:center;">{pred}</td>
+                            <td style="text-align:center;">{pts_badge}</td>
+                        </tr>"""
+
+                    st.markdown(f"""
+                    <table style="width:100%; border-collapse:collapse; margin-bottom:8px;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #2a3060;">
+                                <th style="padding:8px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Participante</th>
+                                <th style="padding:8px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Pronóstico</th>
+                                <th style="padding:8px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Puntos</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows_html_t6}</tbody>
+                    </table>
+                    """, unsafe_allow_html=True)
+
+    # Footer
     st.markdown(f"""
     <div style="text-align:center; margin-top:3rem; color:#4b5563; font-size:12px;">
         Actualizado cada 60 seg · {datetime.now().strftime('%d/%m/%Y %H:%M')}
