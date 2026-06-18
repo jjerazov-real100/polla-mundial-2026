@@ -579,6 +579,93 @@ client_email = "..."
             </table>
             """, unsafe_allow_html=True)
 
+    with tab4:
+        st.markdown("### Pronósticos por partido")
+        st.markdown(
+            "<p style='color:#8891b4; font-size:13px;'>Solo se muestran partidos cuyas predicciones ya están desbloqueadas (faltan menos de 10 min o ya se jugaron).</p>",
+            unsafe_allow_html=True
+        )
+
+        if pred_df.empty or part_df.empty:
+            st.info("Aún no hay datos cargados.")
+        else:
+            from zoneinfo import ZoneInfo
+            ahora_t4 = datetime.now(ZoneInfo("America/Bogota")).replace(tzinfo=None)
+
+            def desbloqueado_t4(row):
+                try:
+                    hora = row.get("hora (COL)", "00:00") or "00:00"
+                    dt = datetime.strptime(f"{row['fecha']} {hora}", "%Y-%m-%d %H:%M")
+                    return ahora_t4 >= dt - timedelta(minutes=10)
+                except Exception:
+                    return False
+
+            partidos_desbloqueados = part_df[part_df.apply(desbloqueado_t4, axis=1)]
+
+            if partidos_desbloqueados.empty:
+                st.info("Aún no hay partidos desbloqueados. Las predicciones se revelan 10 minutos antes de cada partido.")
+            else:
+                opciones = partidos_desbloqueados.apply(
+                    lambda r: f"{r['partido_id']} · {r['local']} vs {r['visita']} ({r['fecha']})", axis=1
+                ).tolist()
+                seleccion = st.selectbox("Selecciona un partido", opciones)
+                partido_id_sel = seleccion.split(" · ")[0]
+
+                pred_partido = pred_df[pred_df["partido_id"] == partido_id_sel].copy()
+                part_info = part_df[part_df["partido_id"] == partido_id_sel].iloc[0]
+                res_info = res_df[res_df["partido_id"] == partido_id_sel] if not res_df.empty else pd.DataFrame()
+
+                resultado_real = ""
+                if not res_info.empty and res_info.iloc[0]["goles_local"] != "" and str(res_info.iloc[0]["goles_local"]) != "nan":
+                    gl = res_info.iloc[0]["goles_local"]
+                    gv = res_info.iloc[0]["goles_visita"]
+                    resultado_real = f"{int(float(gl))}-{int(float(gv))}"
+
+                st.markdown(f"""
+                <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:12px;
+                            padding:20px; text-align:center; margin-bottom:20px;">
+                    <div style="font-size:22px; font-weight:700; color:#ffffff;">
+                        {part_info['local']} vs {part_info['visita']}
+                    </div>
+                    <div style="color:#8891b4; font-size:13px; margin-top:4px;">
+                        {part_info['fecha']}
+                    </div>
+                    {f'<div style="margin-top:12px; font-size:28px; font-weight:700; color:#4ade80;">Resultado: {resultado_real}</div>' if resultado_real else '<div style="margin-top:8px; color:#6b7280; font-size:13px;">Partido aún no jugado</div>'}
+                </div>
+                """, unsafe_allow_html=True)
+
+                if pred_partido.empty:
+                    st.info("Nadie ha ingresado predicciones para este partido.")
+                else:
+                    rows_html_t4 = ""
+                    for _, row in pred_partido.sort_values("participante").iterrows():
+                        pred = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
+                        pts_badge = ""
+                        if resultado_real:
+                            rl, rv = resultado_real.split("-")
+                            p = _puntos_limpio(int(row["pred_local"]), int(row["pred_visita"]), int(rl), int(rv))
+                            pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
+
+                        rows_html_t4 += f"""
+                        <tr>
+                            <td style="font-weight:500; color:#ffffff;">{row['participante']}</td>
+                            <td style="text-align:center;"><span class="score-chip">{pred}</span></td>
+                            <td style="text-align:center;">{pts_badge}</td>
+                        </tr>"""
+
+                    st.markdown(f"""
+                    <table style="width:100%; border-collapse:collapse;">
+                        <thead>
+                            <tr style="border-bottom: 1px solid #2a3060;">
+                                <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Participante</th>
+                                <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Pronóstico</th>
+                                <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Puntos</th>
+                            </tr>
+                        </thead>
+                        <tbody>{rows_html_t4}</tbody>
+                    </table>
+                    """, unsafe_allow_html=True)
+
     with tab5:
         st.markdown("### Calendario Mundial 2026")
         if part_df.empty:
