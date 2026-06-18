@@ -527,15 +527,30 @@ client_email = "..."
                 unsafe_allow_html=True
             )
 
+            # Diccionario de resultados reales para calcular puntos
+            resultados_dict_p3 = {}
+            if not res_df.empty:
+                for _, r in res_df.iterrows():
+                    if r.get("goles_local") != "" and r.get("goles_visita") != "" and str(r.get("goles_local")) != "nan":
+                        resultados_dict_p3[r["partido_id"]] = (r["goles_local"], r["goles_visita"])
+
             rows_html = ""
             for _, row in df_p.iterrows():
                 desbloqueado = partido_desbloqueado(row["partido_id"])
                 local   = row.get("local",   row["partido_id"])
                 visita  = row.get("visita",  "")
                 fecha   = row.get("fecha",   "")
+
+                puntos_html = '<span style="color:#6b7280;">—</span>'
+
                 if desbloqueado:
                     pred = f'<span class="score-chip">{int(row["pred_local"])}-{int(row["pred_visita"])}</span>'
                     estado = '<span style="color:#4ade80; font-size:12px;">🔓 Visible</span>'
+
+                    if row["partido_id"] in resultados_dict_p3:
+                        rl, rv = resultados_dict_p3[row["partido_id"]]
+                        pts = _puntos_limpio(int(row["pred_local"]), int(row["pred_visita"]), int(rl), int(rv))
+                        puntos_html = f'<span class="pts-badge">{pts} pts</span>' if pts > 0 else '<span class="pts-zero">0 pts</span>'
                 else:
                     pred = '<span style="color:#6b7280; font-size:18px;">🔒</span>'
                     estado = '<span style="color:#6b7280; font-size:12px;">Bloqueado</span>'
@@ -546,6 +561,7 @@ client_email = "..."
                     <td style="color:#ffffff; font-weight:500;">{local} vs {visita}</td>
                     <td style="text-align:center;">{pred}</td>
                     <td style="text-align:center;">{estado}</td>
+                    <td style="text-align:center;">{puntos_html}</td>
                 </tr>"""
 
             st.markdown(f"""
@@ -556,6 +572,7 @@ client_email = "..."
                         <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Partido</th>
                         <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Predicción</th>
                         <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Estado</th>
+                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Puntos</th>
                     </tr>
                 </thead>
                 <tbody>{rows_html}</tbody>
