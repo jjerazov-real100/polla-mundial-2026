@@ -1217,7 +1217,7 @@ client_email = "..."
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día", "📊 Fase de Grupos", "🏟️ Eliminatorias"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día", "📊 Fase de Grupos", "🏟️ Eliminatorias", "🪦 Farolitos"])
 
     with tab1:
         st.markdown("### Clasificación general")
@@ -1350,7 +1350,7 @@ client_email = "..."
                 )
 
             st.markdown(
-                "<p style='color:#8891b4; font-size:13px;'>🔒 Las predicciones se revelan 10 minutos antes de cada partido. Haz clic en un partido para ver el desglose de puntos.</p>",
+                "<p style='color:#8891b4; font-size:13px;'>🔒 Las predicciones se revelan 10 minutos antes de cada partido.</p>",
                 unsafe_allow_html=True
             )
 
@@ -1361,93 +1361,108 @@ client_email = "..."
                     if r.get("goles_local") != "" and r.get("goles_visita") != "" and str(r.get("goles_local")) != "nan":
                         resultados_dict_p3[r["partido_id"]] = (r["goles_local"], r["goles_visita"])
 
+            rows_html = ""
             for _, row in df_p.iterrows():
                 desbloqueado = partido_desbloqueado(row["partido_id"])
                 local   = row.get("local",   row["partido_id"])
                 visita  = row.get("visita",  "")
                 fecha   = row.get("fecha",   "")
 
-                tiene_resultado = row["partido_id"] in resultados_dict_p3
-                sin_enviar = row.get("pred_local") == "" or row.get("pred_visita") == ""
+                puntos_html = '<span style="color:#6b7280;">—</span>'
 
-                # ── Etiqueta del expander (resumen visible sin hacer clic) ──
-                if not desbloqueado:
-                    pred_txt = "🔒"
-                    resultado_txt = ""
-                    pts_txt = ""
-                elif sin_enviar:
-                    pred_txt = "Sin enviar"
-                    resultado_txt = ""
-                    pts_txt = ""
+                if desbloqueado:
+                    if row.get("pred_local") == "" or row.get("pred_visita") == "":
+                        pred = '<span style="color:#6b7280;">Sin enviar</span>'
+                        estado = '<span style="color:#f97316; font-size:12px;">⚠️ No registró</span>'
+                    else:
+                        pred = f'<span class="score-chip">{int(row["pred_local"])}-{int(row["pred_visita"])}</span>'
+                        estado = '<span style="color:#4ade80; font-size:12px;">🔓 Visible</span>'
+
+                        if row["partido_id"] in resultados_dict_p3:
+                            rl, rv = resultados_dict_p3[row["partido_id"]]
+                            mult_p3 = _multiplicador_por_fase(row.get("fase"))
+                            pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
+                            sufijo_x2 = " ⚡" if mult_p3 == 2 else ""
+                            puntos_html = f'<span class="pts-badge">{pts} pts{sufijo_x2}</span>' if pts > 0 else '<span class="pts-zero">0 pts</span>'
                 else:
-                    pred_txt = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
-                    if tiene_resultado:
-                        rl, rv = resultados_dict_p3[row["partido_id"]]
-                        resultado_txt = f"Real: {int(rl)}-{int(rv)}"
-                        mult_p3 = _multiplicador_por_fase(row.get("fase"))
-                        pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
-                        pts_txt = f"{pts} pts" if mult_p3 == 1 else f"{pts} pts (x2)"
-                    else:
-                        resultado_txt = "Aún no jugado"
-                        pts_txt = ""
+                    pred = '<span style="color:#6b7280; font-size:18px;">🔒</span>'
+                    estado = '<span style="color:#6b7280; font-size:12px;">Bloqueado</span>'
 
-                etiqueta = f"**{fecha}** · {local} vs {visita}  —  Predicción: **{pred_txt}**"
-                if resultado_txt:
-                    etiqueta += f"  ·  {resultado_txt}"
-                if pts_txt:
-                    etiqueta += f"  ·  🏆 **{pts_txt}**"
+                rows_html += f"""
+                <tr>
+                    <td style="color:#8891b4;">{fecha}</td>
+                    <td style="color:#ffffff; font-weight:500;">{local} vs {visita}</td>
+                    <td style="text-align:center;">{pred}</td>
+                    <td style="text-align:center;">{estado}</td>
+                    <td style="text-align:center;">{puntos_html}</td>
+                </tr>"""
 
-                with st.expander(etiqueta):
-                    if not desbloqueado:
+            st.markdown(f"""
+            <table style="width:100%; border-collapse:collapse; margin-top:12px;">
+                <thead>
+                    <tr style="border-bottom: 1px solid #2a3060;">
+                        <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Fecha</th>
+                        <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Partido</th>
+                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Predicción</th>
+                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Estado</th>
+                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Puntos</th>
+                    </tr>
+                </thead>
+                <tbody>{rows_html}</tbody>
+            </table>
+            """, unsafe_allow_html=True)
+
+            # ── Desglose de puntos (debajo de la tabla, no por fila) ──
+            partidos_con_desglose = []
+            for _, row in df_p.iterrows():
+                if partido_desbloqueado(row["partido_id"]) and row["partido_id"] in resultados_dict_p3 \
+                   and row.get("pred_local") != "" and row.get("pred_visita") != "":
+                    local_d = row.get("local", row["partido_id"])
+                    visita_d = row.get("visita", "")
+                    fecha_d = row.get("fecha", "")
+                    partidos_con_desglose.append((row["partido_id"], f"{fecha_d} · {local_d} vs {visita_d}", row))
+
+            if partidos_con_desglose:
+                st.markdown("<br>", unsafe_allow_html=True)
+                opciones_desglose = [etiqueta for _, etiqueta, _ in partidos_con_desglose]
+                sel_desglose = st.selectbox("🔽 Ver desglose de puntos de un partido", opciones_desglose, key="desglose_tab3")
+
+                row_sel = next(r for pid, etq, r in partidos_con_desglose if etq == sel_desglose)
+                rl, rv = resultados_dict_p3[row_sel["partido_id"]]
+                mult_p3 = _multiplicador_por_fase(row_sel.get("fase"))
+                desglose = _desglose_puntos(row_sel["pred_local"], row_sel["pred_visita"], rl, rv, mult_p3)
+
+                with st.expander(f"Desglose: {sel_desglose}", expanded=True):
+                    if mult_p3 == 2:
                         st.markdown(
-                            '<span style="color:#6b7280; font-size:13px;">🔒 Esta predicción se revela 10 minutos antes del partido.</span>',
+                            '<span style="background:#3d2a00; color:#fbbf24; border-radius:6px; padding:2px 10px; font-size:11px; font-weight:600;">⚡ Fase eliminatoria · puntos x2</span>',
                             unsafe_allow_html=True
                         )
-                    elif sin_enviar:
-                        st.markdown(
-                            '<span style="color:#f97316; font-size:13px;">⚠️ Este participante no registró predicción para este partido.</span>',
-                            unsafe_allow_html=True
-                        )
-                    elif not tiene_resultado:
-                        st.markdown(
-                            '<span style="color:#6b7280; font-size:13px;">El partido aún no se ha jugado, así que no hay puntos que desglosar todavía.</span>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        rl, rv = resultados_dict_p3[row["partido_id"]]
-                        mult_p3 = _multiplicador_por_fase(row.get("fase"))
-                        desglose = _desglose_puntos(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
 
-                        if mult_p3 == 2:
-                            st.markdown(
-                                '<span style="background:#3d2a00; color:#fbbf24; border-radius:6px; padding:2px 10px; font-size:11px; font-weight:600;">⚡ Fase eliminatoria · puntos x2</span>',
-                                unsafe_allow_html=True
-                            )
+                    filas_desglose = ""
+                    for etiqueta_item, valor, acertado in desglose:
+                        icono = "✅" if acertado else "❌"
+                        color_pts = "#4ade80" if acertado else "#6b7280"
+                        pts_mostrados = valor if acertado else 0
+                        filas_desglose += f"""
+                        <tr>
+                            <td style="padding:6px 12px; color:#e0e4f4;">{icono} {etiqueta_item}</td>
+                            <td style="padding:6px 12px; text-align:right; color:{color_pts}; font-weight:600;">+{pts_mostrados} pts</td>
+                        </tr>"""
 
-                        filas_desglose = ""
-                        for etiqueta_item, valor, acertado in desglose:
-                            icono = "✅" if acertado else "❌"
-                            color_pts = "#4ade80" if acertado else "#6b7280"
-                            pts_mostrados = valor if acertado else 0
-                            filas_desglose += f"""
-                            <tr>
-                                <td style="padding:6px 12px; color:#e0e4f4;">{icono} {etiqueta_item}</td>
-                                <td style="padding:6px 12px; text-align:right; color:{color_pts}; font-weight:600;">+{pts_mostrados} pts</td>
-                            </tr>"""
+                    total_pts = _puntos_limpio(row_sel["pred_local"], row_sel["pred_visita"], rl, rv, mult_p3)
 
-                        total_pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
-
-                        st.markdown(f"""
-                        <table style="width:100%; border-collapse:collapse;">
-                            <tbody>{filas_desglose}</tbody>
-                            <tfoot>
-                                <tr style="border-top:1px solid #2a3060;">
-                                    <td style="padding:8px 12px; font-weight:700; color:#ffffff;">Total</td>
-                                    <td style="padding:8px 12px; text-align:right; font-weight:700; color:#3b82f6;">{total_pts} pts</td>
-                                </tr>
-                            </tfoot>
-                        </table>
-                        """, unsafe_allow_html=True)
+                    st.markdown(f"""
+                    <table style="width:100%; border-collapse:collapse;">
+                        <tbody>{filas_desglose}</tbody>
+                        <tfoot>
+                            <tr style="border-top:1px solid #2a3060;">
+                                <td style="padding:8px 12px; font-weight:700; color:#ffffff;">Total</td>
+                                <td style="padding:8px 12px; text-align:right; font-weight:700; color:#3b82f6;">{total_pts} pts</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                    """, unsafe_allow_html=True)
 
     with tab4:
         st.markdown("### Pronósticos por partido")
@@ -1979,6 +1994,71 @@ client_email = "..."
                         </div>
                     </div>
                     """, unsafe_allow_html=True)
+
+    with tab9:
+        st.markdown("### Farolitos del Mundial")
+        st.markdown(
+            "<p style='color:#8891b4; font-size:13px;'>El último lugar de cada grupo, ordenado de peor a mejor. "
+            "El #1 es el equipo con el rendimiento más flojo de todo el torneo (entre los últimos de su grupo).</p>",
+            unsafe_allow_html=True
+        )
+
+        if part_df.empty or "grupo" not in part_df.columns:
+            st.info("No hay datos de grupos cargados.")
+        else:
+            tablas_grupos = calcular_todas_las_tablas(part_df, res_df)
+
+            ultimos = []
+            for grupo, tabla in tablas_grupos.items():
+                if len(tabla) >= 4 and tabla[3].get("PJ", 0) > 0:
+                    ultimo = dict(tabla[3])
+                    ultimo["grupo"] = grupo
+                    ultimos.append(ultimo)
+
+            if not ultimos:
+                st.info("Aún no hay suficientes partidos jugados para calcular los últimos lugares.")
+            else:
+                # Peor a mejor: menos puntos primero, luego peor DG, luego menos GF
+                ultimos.sort(key=lambda x: (x["Pts"], x["DG"], x["GF"]))
+
+                rows_html_9 = ""
+                for i, eq in enumerate(ultimos, 1):
+                    medalla = "🪦" if i == 1 else ("💀" if i <= 3 else "")
+                    rows_html_9 += f"""
+                    <tr>
+                        <td style="text-align:center; font-size:18px;">{medalla if medalla else i}</td>
+                        <td style="color:#ffffff; font-weight:600;">{eq['equipo']}</td>
+                        <td style="text-align:center; color:#8891b4;">Grupo {eq['grupo']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['PJ']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['G']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['E']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['P']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['GF']}</td>
+                        <td style="text-align:center; color:#8891b4;">{eq['GC']}</td>
+                        <td style="text-align:center; color:#e24b4a; font-weight:600;">{eq['DG']:+d}</td>
+                        <td style="text-align:center; color:#fbbf24; font-weight:700;">{eq['Pts']}</td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <table style="width:100%; border-collapse:collapse;">
+                    <thead>
+                        <tr style="border-bottom:1px solid #2a3060; color:#6b7280; font-size:11px; text-transform:uppercase;">
+                            <th>#</th><th style="text-align:left;">Equipo</th><th>Grupo</th>
+                            <th>PJ</th><th>G</th><th>E</th><th>P</th>
+                            <th>GF</th><th>GC</th><th>DG</th><th>Pts</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows_html_9}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+                if len(ultimos) < len(tablas_grupos):
+                    st.markdown(
+                        f"<p style='color:#6b7280; font-size:12px; margin-top:12px;'>"
+                        f"Mostrando {len(ultimos)} de {len(tablas_grupos)} grupos — "
+                        f"los grupos restantes todavía no tienen partidos jugados.</p>",
+                        unsafe_allow_html=True
+                    )
 
     # Footer
     st.markdown(f"""
