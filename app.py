@@ -25,7 +25,7 @@ st.markdown("""
         background: linear-gradient(135deg, #1a1f3a 0%, #0d1226 100%);
         border: 1px solid #2a3060;
         border-radius: 12px;
-        padding: 20px;
+        padding: 16px 12px;
         text-align: center;
     }
     .metric-card .label {
@@ -166,15 +166,32 @@ def load_sheet(spreadsheet_id: str):
 
 
 # ── Lógica de puntuación ─────────────────────────────────────────────────────
-def _puntos_limpio(pl, pv, rl, rv):
+def _multiplicador_por_fase(fase):
     """
-    Calcula puntos para una predicción vs resultado real (máximo 10).
+    A partir de 16avos en adelante, los puntos valen el doble.
+    Fases: Grupos (x1), 16avos / Octavos / Cuartos / Semifinal /
+    3er Puesto / Final (x2).
+    """
+    if not fase:
+        return 1
+    fase_norm = str(fase).strip().lower()
+    if fase_norm in ("grupos",):
+        return 1
+    return 2
+
+
+def _puntos_limpio(pl, pv, rl, rv, multiplicador=1):
+    """
+    Calcula puntos para una predicción vs resultado real
+    (máximo 10 pts, o 20 pts si multiplicador=2).
 
       - Selección del ganador (o empate): 4 pts
       - Diferencia de gol exacta:          2 pts
       - Goles equipo local exactos:        1 pt
       - Goles equipo visita exactos:       1 pt
       - Marcador exacto (bono):            2 pts
+
+    A partir de 16avos, todo el desglose se multiplica x2.
     """
     try:
         pl, pv, rl, rv = int(pl), int(pv), int(rl), int(rv)
@@ -204,11 +221,47 @@ def _puntos_limpio(pl, pv, rl, rv):
     if pl == rl and pv == rv:
         pts += 2
 
-    return min(pts, 10)
+    return min(pts, 10) * multiplicador
 
 
-def calcular_ranking(pred_df, res_df):
-    """Calcula el ranking general cruzando predicciones con resultados reales."""
+def _desglose_puntos(pl, pv, rl, rv, multiplicador=1):
+    """
+    Igual que _puntos_limpio, pero retorna el detalle componente por
+    componente en vez de solo el total. Usado para mostrar el desglose
+    expandible en la pestaña de Predicciones.
+
+    Retorna una lista de tuplas (etiqueta, puntos, acertado: bool)
+    Los puntos ya vienen multiplicados según la fase.
+    """
+    try:
+        pl, pv, rl, rv = int(pl), int(pv), int(rl), int(rv)
+    except (ValueError, TypeError):
+        return []
+
+    def resultado(l, v): return "L" if l > v else ("V" if l < v else "E")
+
+    acierto_ganador  = resultado(pl, pv) == resultado(rl, rv)
+    acierto_diferencia = (pl - pv) == (rl - rv)
+    acierto_local    = pl == rl
+    acierto_visita   = pv == rv
+    acierto_exacto   = acierto_local and acierto_visita
+
+    detalle = [
+        ("Ganador o empate",      4 * multiplicador, acierto_ganador),
+        ("Diferencia de gol",     2 * multiplicador, acierto_diferencia),
+        ("Goles equipo local",    1 * multiplicador, acierto_local),
+        ("Goles equipo visita",   1 * multiplicador, acierto_visita),
+        ("Marcador exacto (bono)", 2 * multiplicador, acierto_exacto),
+    ]
+    return detalle
+
+
+def calcular_ranking(pred_df, res_df, part_df=None):
+    """
+    Calcula el ranking general cruzando predicciones con resultados reales.
+    Si se pasa part_df, se usa la columna 'fase' de cada partido para
+    aplicar el multiplicador x2 a partir de 16avos.
+    """
     if pred_df.empty or res_df.empty:
         return pd.DataFrame(), pd.DataFrame()
 
@@ -218,6 +271,13 @@ def calcular_ranking(pred_df, res_df):
         for _, row in res_df.iterrows()
         if row.get("goles_local") != "" and row.get("goles_visita") != ""
     }
+
+    # Mapa partido_id -> fase, para saber el multiplicador de cada partido
+    fase_dict = {}
+    if part_df is not None and not part_df.empty:
+        fase_col = [c for c in part_df.columns if "fase" in c.lower()]
+        if fase_col:
+            fase_dict = dict(zip(part_df["partido_id"], part_df[fase_col[0]]))
 
     ranking = {}
     detalles = []
@@ -234,8 +294,9 @@ def calcular_ranking(pred_df, res_df):
             continue
 
         rl, rv = resultados_dict[partido_id]
+        multiplicador = _multiplicador_por_fase(fase_dict.get(partido_id))
         pts = _puntos_limpio(
-            row["pred_local"], row["pred_visita"], rl, rv
+            row["pred_local"], row["pred_visita"], rl, rv, multiplicador
         )
 
         if participante not in ranking:
@@ -243,7 +304,7 @@ def calcular_ranking(pred_df, res_df):
 
         ranking[participante]["puntos"]   += pts
         ranking[participante]["partidos"] += 1
-        if pts == 10:
+        if pts == 10 * multiplicador:
             ranking[participante]["exactos"] += 1
 
         detalles.append({
@@ -264,6 +325,777 @@ def calcular_ranking(pred_df, res_df):
 
     det_df = pd.DataFrame(detalles)
     return rank_df, det_df
+
+
+COMBINACIONES_495 = [
+    {"grupos":["E","F","G","H","I","J","K","L"],"cruces":["3E","3J","3I","3F","3H","3G","3L","3K"]},
+    {"grupos":["D","F","G","H","I","J","K","L"],"cruces":["3H","3G","3I","3D","3J","3F","3L","3K"]},
+    {"grupos":["D","E","G","H","I","J","K","L"],"cruces":["3E","3J","3I","3D","3H","3G","3L","3K"]},
+    {"grupos":["D","E","F","H","I","J","K","L"],"cruces":["3E","3J","3I","3D","3H","3F","3L","3K"]},
+    {"grupos":["D","E","F","G","I","J","K","L"],"cruces":["3E","3G","3I","3D","3J","3F","3L","3K"]},
+    {"grupos":["D","E","F","G","H","J","K","L"],"cruces":["3E","3G","3J","3D","3H","3F","3L","3K"]},
+    {"grupos":["D","E","F","G","H","I","K","L"],"cruces":["3E","3G","3I","3D","3H","3F","3L","3K"]},
+    {"grupos":["D","E","F","G","H","I","J","L"],"cruces":["3E","3G","3J","3D","3H","3F","3L","3I"]},
+    {"grupos":["D","E","F","G","H","I","J","K"],"cruces":["3E","3G","3J","3D","3H","3F","3I","3K"]},
+    {"grupos":["C","F","G","H","I","J","K","L"],"cruces":["3H","3G","3I","3C","3J","3F","3L","3K"]},
+    {"grupos":["C","E","G","H","I","J","K","L"],"cruces":["3E","3J","3I","3C","3H","3G","3L","3K"]},
+    {"grupos":["C","E","F","H","I","J","K","L"],"cruces":["3E","3J","3I","3C","3H","3F","3L","3K"]},
+    {"grupos":["C","E","F","G","I","J","K","L"],"cruces":["3E","3G","3I","3C","3J","3F","3L","3K"]},
+    {"grupos":["C","E","F","G","H","J","K","L"],"cruces":["3E","3G","3J","3C","3H","3F","3L","3K"]},
+    {"grupos":["C","E","F","G","H","I","K","L"],"cruces":["3E","3G","3I","3C","3H","3F","3L","3K"]},
+    {"grupos":["C","E","F","G","H","I","J","L"],"cruces":["3E","3G","3J","3C","3H","3F","3L","3I"]},
+    {"grupos":["C","E","F","G","H","I","J","K"],"cruces":["3E","3G","3J","3C","3H","3F","3I","3K"]},
+    {"grupos":["C","D","G","H","I","J","K","L"],"cruces":["3H","3G","3I","3C","3J","3D","3L","3K"]},
+    {"grupos":["C","D","F","H","I","J","K","L"],"cruces":["3C","3J","3I","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","F","G","I","J","K","L"],"cruces":["3C","3G","3I","3D","3J","3F","3L","3K"]},
+    {"grupos":["C","D","F","G","H","J","K","L"],"cruces":["3C","3G","3J","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","F","G","H","I","K","L"],"cruces":["3C","3G","3I","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","F","G","H","I","J","L"],"cruces":["3C","3G","3J","3D","3H","3F","3L","3I"]},
+    {"grupos":["C","D","F","G","H","I","J","K"],"cruces":["3C","3G","3J","3D","3H","3F","3I","3K"]},
+    {"grupos":["C","D","E","H","I","J","K","L"],"cruces":["3E","3J","3I","3C","3H","3D","3L","3K"]},
+    {"grupos":["C","D","E","G","I","J","K","L"],"cruces":["3E","3G","3I","3C","3J","3D","3L","3K"]},
+    {"grupos":["C","D","E","G","H","J","K","L"],"cruces":["3E","3G","3J","3C","3H","3D","3L","3K"]},
+    {"grupos":["C","D","E","G","H","I","K","L"],"cruces":["3E","3G","3I","3C","3H","3D","3L","3K"]},
+    {"grupos":["C","D","E","G","H","I","J","L"],"cruces":["3E","3G","3J","3C","3H","3D","3L","3I"]},
+    {"grupos":["C","D","E","G","H","I","J","K"],"cruces":["3E","3G","3J","3C","3H","3D","3I","3K"]},
+    {"grupos":["C","D","E","F","I","J","K","L"],"cruces":["3C","3J","3E","3D","3I","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","H","J","K","L"],"cruces":["3C","3J","3E","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","H","I","K","L"],"cruces":["3C","3E","3I","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","H","I","J","L"],"cruces":["3C","3J","3E","3D","3H","3F","3L","3I"]},
+    {"grupos":["C","D","E","F","H","I","J","K"],"cruces":["3C","3J","3E","3D","3H","3F","3I","3K"]},
+    {"grupos":["C","D","E","F","G","J","K","L"],"cruces":["3C","3G","3E","3D","3J","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","G","I","K","L"],"cruces":["3C","3G","3E","3D","3I","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","G","I","J","L"],"cruces":["3C","3G","3E","3D","3J","3F","3L","3I"]},
+    {"grupos":["C","D","E","F","G","I","J","K"],"cruces":["3C","3G","3E","3D","3J","3F","3I","3K"]},
+    {"grupos":["C","D","E","F","G","H","K","L"],"cruces":["3C","3G","3E","3D","3H","3F","3L","3K"]},
+    {"grupos":["C","D","E","F","G","H","J","L"],"cruces":["3C","3G","3J","3D","3H","3F","3L","3E"]},
+    {"grupos":["C","D","E","F","G","H","J","K"],"cruces":["3C","3G","3J","3D","3H","3F","3E","3K"]},
+    {"grupos":["C","D","E","F","G","H","I","L"],"cruces":["3C","3G","3E","3D","3H","3F","3L","3I"]},
+    {"grupos":["C","D","E","F","G","H","I","K"],"cruces":["3C","3G","3E","3D","3H","3F","3I","3K"]},
+    {"grupos":["C","D","E","F","G","H","I","J"],"cruces":["3C","3G","3J","3D","3H","3F","3E","3I"]},
+    {"grupos":["B","F","G","H","I","J","K","L"],"cruces":["3H","3J","3B","3F","3I","3G","3L","3K"]},
+    {"grupos":["B","E","G","H","I","J","K","L"],"cruces":["3E","3J","3I","3B","3H","3G","3L","3K"]},
+    {"grupos":["B","E","F","H","I","J","K","L"],"cruces":["3E","3J","3B","3F","3I","3H","3L","3K"]},
+    {"grupos":["B","E","F","G","I","J","K","L"],"cruces":["3E","3J","3B","3F","3I","3G","3L","3K"]},
+    {"grupos":["B","E","F","G","H","J","K","L"],"cruces":["3E","3J","3B","3F","3H","3G","3L","3K"]},
+    {"grupos":["B","E","F","G","H","I","K","L"],"cruces":["3E","3G","3B","3F","3I","3H","3L","3K"]},
+    {"grupos":["B","E","F","G","H","I","J","L"],"cruces":["3E","3J","3B","3F","3H","3G","3L","3I"]},
+    {"grupos":["B","E","F","G","H","I","J","K"],"cruces":["3E","3J","3B","3F","3H","3G","3I","3K"]},
+    {"grupos":["B","D","G","H","I","J","K","L"],"cruces":["3H","3J","3B","3D","3I","3G","3L","3K"]},
+    {"grupos":["B","D","F","H","I","J","K","L"],"cruces":["3H","3J","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","D","F","G","I","J","K","L"],"cruces":["3I","3G","3B","3D","3J","3F","3L","3K"]},
+    {"grupos":["B","D","F","G","H","J","K","L"],"cruces":["3H","3G","3B","3D","3J","3F","3L","3K"]},
+    {"grupos":["B","D","F","G","H","I","K","L"],"cruces":["3H","3G","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","D","F","G","H","I","J","L"],"cruces":["3H","3G","3B","3D","3J","3F","3L","3I"]},
+    {"grupos":["B","D","F","G","H","I","J","K"],"cruces":["3H","3G","3B","3D","3J","3F","3I","3K"]},
+    {"grupos":["B","D","E","H","I","J","K","L"],"cruces":["3E","3J","3B","3D","3I","3H","3L","3K"]},
+    {"grupos":["B","D","E","G","I","J","K","L"],"cruces":["3E","3J","3B","3D","3I","3G","3L","3K"]},
+    {"grupos":["B","D","E","G","H","J","K","L"],"cruces":["3E","3J","3B","3D","3H","3G","3L","3K"]},
+    {"grupos":["B","D","E","G","H","I","K","L"],"cruces":["3E","3G","3B","3D","3I","3H","3L","3K"]},
+    {"grupos":["B","D","E","G","H","I","J","L"],"cruces":["3E","3J","3B","3D","3H","3G","3L","3I"]},
+    {"grupos":["B","D","E","G","H","I","J","K"],"cruces":["3E","3J","3B","3D","3H","3G","3I","3K"]},
+    {"grupos":["B","D","E","F","I","J","K","L"],"cruces":["3E","3J","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","H","J","K","L"],"cruces":["3E","3J","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","H","I","K","L"],"cruces":["3E","3I","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","H","I","J","L"],"cruces":["3E","3J","3B","3D","3H","3F","3L","3I"]},
+    {"grupos":["B","D","E","F","H","I","J","K"],"cruces":["3E","3J","3B","3D","3H","3F","3I","3K"]},
+    {"grupos":["B","D","E","F","G","J","K","L"],"cruces":["3E","3G","3B","3D","3J","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","G","I","K","L"],"cruces":["3E","3G","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","G","I","J","L"],"cruces":["3E","3G","3B","3D","3J","3F","3L","3I"]},
+    {"grupos":["B","D","E","F","G","I","J","K"],"cruces":["3E","3G","3B","3D","3J","3F","3I","3K"]},
+    {"grupos":["B","D","E","F","G","H","K","L"],"cruces":["3E","3G","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","D","E","F","G","H","J","L"],"cruces":["3H","3G","3B","3D","3J","3F","3L","3E"]},
+    {"grupos":["B","D","E","F","G","H","J","K"],"cruces":["3H","3G","3B","3D","3J","3F","3E","3K"]},
+    {"grupos":["B","D","E","F","G","H","I","L"],"cruces":["3E","3G","3B","3D","3H","3F","3L","3I"]},
+    {"grupos":["B","D","E","F","G","H","I","K"],"cruces":["3E","3G","3B","3D","3H","3F","3I","3K"]},
+    {"grupos":["B","D","E","F","G","H","I","J"],"cruces":["3H","3G","3B","3D","3J","3F","3E","3I"]},
+    {"grupos":["B","C","G","H","I","J","K","L"],"cruces":["3H","3J","3B","3C","3I","3G","3L","3K"]},
+    {"grupos":["B","C","F","H","I","J","K","L"],"cruces":["3H","3J","3B","3C","3I","3F","3L","3K"]},
+    {"grupos":["B","C","F","G","I","J","K","L"],"cruces":["3I","3G","3B","3C","3J","3F","3L","3K"]},
+    {"grupos":["B","C","F","G","H","J","K","L"],"cruces":["3H","3G","3B","3C","3J","3F","3L","3K"]},
+    {"grupos":["B","C","F","G","H","I","K","L"],"cruces":["3H","3G","3B","3C","3I","3F","3L","3K"]},
+    {"grupos":["B","C","F","G","H","I","J","L"],"cruces":["3H","3G","3B","3C","3J","3F","3L","3I"]},
+    {"grupos":["B","C","F","G","H","I","J","K"],"cruces":["3H","3G","3B","3C","3J","3F","3I","3K"]},
+    {"grupos":["B","C","E","H","I","J","K","L"],"cruces":["3E","3J","3B","3C","3I","3H","3L","3K"]},
+    {"grupos":["B","C","E","G","I","J","K","L"],"cruces":["3E","3J","3B","3C","3I","3G","3L","3K"]},
+    {"grupos":["B","C","E","G","H","J","K","L"],"cruces":["3E","3J","3B","3C","3H","3G","3L","3K"]},
+    {"grupos":["B","C","E","G","H","I","K","L"],"cruces":["3E","3G","3B","3C","3I","3H","3L","3K"]},
+    {"grupos":["B","C","E","G","H","I","J","L"],"cruces":["3E","3J","3B","3C","3H","3G","3L","3I"]},
+    {"grupos":["B","C","E","G","H","I","J","K"],"cruces":["3E","3J","3B","3C","3H","3G","3I","3K"]},
+    {"grupos":["B","C","E","F","I","J","K","L"],"cruces":["3E","3J","3B","3C","3I","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","H","J","K","L"],"cruces":["3E","3J","3B","3C","3H","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","H","I","K","L"],"cruces":["3E","3I","3B","3C","3H","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","H","I","J","L"],"cruces":["3E","3J","3B","3C","3H","3F","3L","3I"]},
+    {"grupos":["B","C","E","F","H","I","J","K"],"cruces":["3E","3J","3B","3C","3H","3F","3I","3K"]},
+    {"grupos":["B","C","E","F","G","J","K","L"],"cruces":["3E","3G","3B","3C","3J","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","G","I","K","L"],"cruces":["3E","3G","3B","3C","3I","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","G","I","J","L"],"cruces":["3E","3G","3B","3C","3J","3F","3L","3I"]},
+    {"grupos":["B","C","E","F","G","I","J","K"],"cruces":["3E","3G","3B","3C","3J","3F","3I","3K"]},
+    {"grupos":["B","C","E","F","G","H","K","L"],"cruces":["3E","3G","3B","3C","3H","3F","3L","3K"]},
+    {"grupos":["B","C","E","F","G","H","J","L"],"cruces":["3H","3G","3B","3C","3J","3F","3L","3E"]},
+    {"grupos":["B","C","E","F","G","H","J","K"],"cruces":["3H","3G","3B","3C","3J","3F","3E","3K"]},
+    {"grupos":["B","C","E","F","G","H","I","L"],"cruces":["3E","3G","3B","3C","3H","3F","3L","3I"]},
+    {"grupos":["B","C","E","F","G","H","I","K"],"cruces":["3E","3G","3B","3C","3H","3F","3I","3K"]},
+    {"grupos":["B","C","E","F","G","H","I","J"],"cruces":["3H","3G","3B","3C","3J","3F","3E","3I"]},
+    {"grupos":["B","C","D","H","I","J","K","L"],"cruces":["3H","3J","3B","3C","3I","3D","3L","3K"]},
+    {"grupos":["B","C","D","G","I","J","K","L"],"cruces":["3I","3G","3B","3C","3J","3D","3L","3K"]},
+    {"grupos":["B","C","D","G","H","J","K","L"],"cruces":["3H","3G","3B","3C","3J","3D","3L","3K"]},
+    {"grupos":["B","C","D","G","H","I","K","L"],"cruces":["3H","3G","3B","3C","3I","3D","3L","3K"]},
+    {"grupos":["B","C","D","G","H","I","J","L"],"cruces":["3H","3G","3B","3C","3J","3D","3L","3I"]},
+    {"grupos":["B","C","D","G","H","I","J","K"],"cruces":["3H","3G","3B","3C","3J","3D","3I","3K"]},
+    {"grupos":["B","C","D","F","I","J","K","L"],"cruces":["3C","3J","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","H","J","K","L"],"cruces":["3C","3J","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","H","I","K","L"],"cruces":["3C","3I","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","H","I","J","L"],"cruces":["3C","3J","3B","3D","3H","3F","3L","3I"]},
+    {"grupos":["B","C","D","F","H","I","J","K"],"cruces":["3C","3J","3B","3D","3H","3F","3I","3K"]},
+    {"grupos":["B","C","D","F","G","J","K","L"],"cruces":["3C","3G","3B","3D","3J","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","G","I","K","L"],"cruces":["3C","3G","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","G","I","J","L"],"cruces":["3C","3G","3B","3D","3J","3F","3L","3I"]},
+    {"grupos":["B","C","D","F","G","I","J","K"],"cruces":["3C","3G","3B","3D","3J","3F","3I","3K"]},
+    {"grupos":["B","C","D","F","G","H","K","L"],"cruces":["3C","3G","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","C","D","F","G","H","J","L"],"cruces":["3C","3G","3B","3D","3H","3F","3L","3J"]},
+    {"grupos":["B","C","D","F","G","H","J","K"],"cruces":["3H","3G","3B","3C","3J","3F","3D","3K"]},
+    {"grupos":["B","C","D","F","G","H","I","L"],"cruces":["3C","3G","3B","3D","3H","3F","3L","3I"]},
+    {"grupos":["B","C","D","F","G","H","I","K"],"cruces":["3C","3G","3B","3D","3H","3F","3I","3K"]},
+    {"grupos":["B","C","D","F","G","H","I","J"],"cruces":["3H","3G","3B","3C","3J","3F","3D","3I"]},
+    {"grupos":["B","C","D","E","I","J","K","L"],"cruces":["3E","3J","3B","3C","3I","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","H","J","K","L"],"cruces":["3E","3J","3B","3C","3H","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","H","I","K","L"],"cruces":["3E","3I","3B","3C","3H","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","H","I","J","L"],"cruces":["3E","3J","3B","3C","3H","3D","3L","3I"]},
+    {"grupos":["B","C","D","E","H","I","J","K"],"cruces":["3E","3J","3B","3C","3H","3D","3I","3K"]},
+    {"grupos":["B","C","D","E","G","J","K","L"],"cruces":["3E","3G","3B","3C","3J","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","G","I","K","L"],"cruces":["3E","3G","3B","3C","3I","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","G","I","J","L"],"cruces":["3E","3G","3B","3C","3J","3D","3L","3I"]},
+    {"grupos":["B","C","D","E","G","I","J","K"],"cruces":["3E","3G","3B","3C","3J","3D","3I","3K"]},
+    {"grupos":["B","C","D","E","G","H","K","L"],"cruces":["3E","3G","3B","3C","3H","3D","3L","3K"]},
+    {"grupos":["B","C","D","E","G","H","J","L"],"cruces":["3H","3G","3B","3C","3J","3D","3L","3E"]},
+    {"grupos":["B","C","D","E","G","H","J","K"],"cruces":["3H","3G","3B","3C","3J","3D","3E","3K"]},
+    {"grupos":["B","C","D","E","G","H","I","L"],"cruces":["3E","3G","3B","3C","3H","3D","3L","3I"]},
+    {"grupos":["B","C","D","E","G","H","I","K"],"cruces":["3E","3G","3B","3C","3H","3D","3I","3K"]},
+    {"grupos":["B","C","D","E","G","H","I","J"],"cruces":["3H","3G","3B","3C","3J","3D","3E","3I"]},
+    {"grupos":["B","C","D","E","F","J","K","L"],"cruces":["3C","3J","3B","3D","3E","3F","3L","3K"]},
+    {"grupos":["B","C","D","E","F","I","K","L"],"cruces":["3C","3E","3B","3D","3I","3F","3L","3K"]},
+    {"grupos":["B","C","D","E","F","I","J","L"],"cruces":["3C","3J","3B","3D","3E","3F","3L","3I"]},
+    {"grupos":["B","C","D","E","F","I","J","K"],"cruces":["3C","3J","3B","3D","3E","3F","3I","3K"]},
+    {"grupos":["B","C","D","E","F","H","K","L"],"cruces":["3C","3E","3B","3D","3H","3F","3L","3K"]},
+    {"grupos":["B","C","D","E","F","H","J","L"],"cruces":["3C","3J","3B","3D","3H","3F","3L","3E"]},
+    {"grupos":["B","C","D","E","F","H","J","K"],"cruces":["3C","3J","3B","3D","3H","3F","3E","3K"]},
+    {"grupos":["B","C","D","E","F","H","I","L"],"cruces":["3C","3E","3B","3D","3H","3F","3L","3I"]},
+    {"grupos":["B","C","D","E","F","H","I","K"],"cruces":["3C","3E","3B","3D","3H","3F","3I","3K"]},
+    {"grupos":["B","C","D","E","F","H","I","J"],"cruces":["3C","3J","3B","3D","3H","3F","3E","3I"]},
+    {"grupos":["B","C","D","E","F","G","K","L"],"cruces":["3C","3G","3B","3D","3E","3F","3L","3K"]},
+    {"grupos":["B","C","D","E","F","G","J","L"],"cruces":["3C","3G","3B","3D","3J","3F","3L","3E"]},
+    {"grupos":["B","C","D","E","F","G","J","K"],"cruces":["3C","3G","3B","3D","3J","3F","3E","3K"]},
+    {"grupos":["B","C","D","E","F","G","I","L"],"cruces":["3C","3G","3B","3D","3E","3F","3L","3I"]},
+    {"grupos":["B","C","D","E","F","G","I","K"],"cruces":["3C","3G","3B","3D","3E","3F","3I","3K"]},
+    {"grupos":["B","C","D","E","F","G","I","J"],"cruces":["3C","3G","3B","3D","3J","3F","3E","3I"]},
+    {"grupos":["B","C","D","E","F","G","H","L"],"cruces":["3C","3G","3B","3D","3H","3F","3L","3E"]},
+    {"grupos":["B","C","D","E","F","G","H","K"],"cruces":["3C","3G","3B","3D","3H","3F","3E","3K"]},
+    {"grupos":["B","C","D","E","F","G","H","J"],"cruces":["3H","3G","3B","3C","3J","3F","3D","3E"]},
+    {"grupos":["B","C","D","E","F","G","H","I"],"cruces":["3C","3G","3B","3D","3H","3F","3E","3I"]},
+    {"grupos":["A","F","G","H","I","J","K","L"],"cruces":["3H","3J","3I","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","E","G","H","I","J","K","L"],"cruces":["3E","3J","3I","3A","3H","3G","3L","3K"]},
+    {"grupos":["A","E","F","H","I","J","K","L"],"cruces":["3E","3J","3I","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","E","F","G","I","J","K","L"],"cruces":["3E","3J","3I","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","E","F","G","H","J","K","L"],"cruces":["3E","3G","3J","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","E","F","G","H","I","K","L"],"cruces":["3E","3G","3I","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","E","F","G","H","I","J","L"],"cruces":["3E","3G","3J","3F","3A","3H","3L","3I"]},
+    {"grupos":["A","E","F","G","H","I","J","K"],"cruces":["3E","3G","3J","3F","3A","3H","3I","3K"]},
+    {"grupos":["A","D","G","H","I","J","K","L"],"cruces":["3H","3J","3I","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","D","F","H","I","J","K","L"],"cruces":["3H","3J","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","F","G","I","J","K","L"],"cruces":["3I","3G","3J","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","F","G","H","J","K","L"],"cruces":["3H","3G","3J","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","F","G","H","I","K","L"],"cruces":["3H","3G","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","F","G","H","I","J","L"],"cruces":["3H","3G","3J","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","D","F","G","H","I","J","K"],"cruces":["3H","3G","3J","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","D","E","H","I","J","K","L"],"cruces":["3E","3J","3I","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","D","E","G","I","J","K","L"],"cruces":["3E","3J","3I","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","D","E","G","H","J","K","L"],"cruces":["3E","3G","3J","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","D","E","G","H","I","K","L"],"cruces":["3E","3G","3I","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","D","E","G","H","I","J","L"],"cruces":["3E","3G","3J","3D","3A","3H","3L","3I"]},
+    {"grupos":["A","D","E","G","H","I","J","K"],"cruces":["3E","3G","3J","3D","3A","3H","3I","3K"]},
+    {"grupos":["A","D","E","F","I","J","K","L"],"cruces":["3E","3J","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","H","J","K","L"],"cruces":["3H","3J","3E","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","H","I","K","L"],"cruces":["3H","3E","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","H","I","J","L"],"cruces":["3H","3J","3E","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","D","E","F","H","I","J","K"],"cruces":["3H","3J","3E","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","D","E","F","G","J","K","L"],"cruces":["3E","3G","3J","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","G","I","K","L"],"cruces":["3E","3G","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","G","I","J","L"],"cruces":["3E","3G","3J","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","D","E","F","G","I","J","K"],"cruces":["3E","3G","3J","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","D","E","F","G","H","K","L"],"cruces":["3H","3G","3E","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","D","E","F","G","H","J","L"],"cruces":["3H","3G","3J","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","D","E","F","G","H","J","K"],"cruces":["3H","3G","3J","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","D","E","F","G","H","I","L"],"cruces":["3H","3G","3E","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","D","E","F","G","H","I","K"],"cruces":["3H","3G","3E","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","D","E","F","G","H","I","J"],"cruces":["3H","3G","3J","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","C","G","H","I","J","K","L"],"cruces":["3H","3J","3I","3C","3A","3G","3L","3K"]},
+    {"grupos":["A","C","F","H","I","J","K","L"],"cruces":["3H","3J","3I","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","F","G","I","J","K","L"],"cruces":["3I","3G","3J","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","F","G","H","J","K","L"],"cruces":["3H","3G","3J","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","F","G","H","I","K","L"],"cruces":["3H","3G","3I","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","F","G","H","I","J","L"],"cruces":["3H","3G","3J","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","C","F","G","H","I","J","K"],"cruces":["3H","3G","3J","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","C","E","H","I","J","K","L"],"cruces":["3E","3J","3I","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","C","E","G","I","J","K","L"],"cruces":["3E","3J","3I","3C","3A","3G","3L","3K"]},
+    {"grupos":["A","C","E","G","H","J","K","L"],"cruces":["3E","3G","3J","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","C","E","G","H","I","K","L"],"cruces":["3E","3G","3I","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","C","E","G","H","I","J","L"],"cruces":["3E","3G","3J","3C","3A","3H","3L","3I"]},
+    {"grupos":["A","C","E","G","H","I","J","K"],"cruces":["3E","3G","3J","3C","3A","3H","3I","3K"]},
+    {"grupos":["A","C","E","F","I","J","K","L"],"cruces":["3E","3J","3I","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","H","J","K","L"],"cruces":["3H","3J","3E","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","H","I","K","L"],"cruces":["3H","3E","3I","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","H","I","J","L"],"cruces":["3H","3J","3E","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","C","E","F","H","I","J","K"],"cruces":["3H","3J","3E","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","C","E","F","G","J","K","L"],"cruces":["3E","3G","3J","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","G","I","K","L"],"cruces":["3E","3G","3I","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","G","I","J","L"],"cruces":["3E","3G","3J","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","C","E","F","G","I","J","K"],"cruces":["3E","3G","3J","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","C","E","F","G","H","K","L"],"cruces":["3H","3G","3E","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","C","E","F","G","H","J","L"],"cruces":["3H","3G","3J","3C","3A","3F","3L","3E"]},
+    {"grupos":["A","C","E","F","G","H","J","K"],"cruces":["3H","3G","3J","3C","3A","3F","3E","3K"]},
+    {"grupos":["A","C","E","F","G","H","I","L"],"cruces":["3H","3G","3E","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","C","E","F","G","H","I","K"],"cruces":["3H","3G","3E","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","C","E","F","G","H","I","J"],"cruces":["3H","3G","3J","3C","3A","3F","3E","3I"]},
+    {"grupos":["A","C","D","H","I","J","K","L"],"cruces":["3H","3J","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","G","I","J","K","L"],"cruces":["3I","3G","3J","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","G","H","J","K","L"],"cruces":["3H","3G","3J","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","G","H","I","K","L"],"cruces":["3H","3G","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","G","H","I","J","L"],"cruces":["3H","3G","3J","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","G","H","I","J","K"],"cruces":["3H","3G","3J","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","F","I","J","K","L"],"cruces":["3C","3J","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","F","H","J","K","L"],"cruces":["3H","3J","3F","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","F","H","I","K","L"],"cruces":["3H","3F","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","F","H","I","J","L"],"cruces":["3H","3J","3F","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","F","H","I","J","K"],"cruces":["3H","3J","3F","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","F","G","J","K","L"],"cruces":["3C","3G","3J","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","F","G","I","K","L"],"cruces":["3C","3G","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","F","G","I","J","L"],"cruces":["3C","3G","3J","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","C","D","F","G","I","J","K"],"cruces":["3C","3G","3J","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","C","D","F","G","H","K","L"],"cruces":["3H","3G","3F","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","F","G","H","J","L"],"cruces":["3C","3G","3J","3D","3A","3F","3L","3H"]},
+    {"grupos":["A","C","D","F","G","H","J","K"],"cruces":["3H","3G","3J","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","C","D","F","G","H","I","L"],"cruces":["3H","3G","3F","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","F","G","H","I","K"],"cruces":["3H","3G","3F","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","F","G","H","I","J"],"cruces":["3H","3G","3J","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","C","D","E","I","J","K","L"],"cruces":["3E","3J","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","H","J","K","L"],"cruces":["3H","3J","3E","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","H","I","K","L"],"cruces":["3H","3E","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","H","I","J","L"],"cruces":["3H","3J","3E","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","E","H","I","J","K"],"cruces":["3H","3J","3E","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","E","G","J","K","L"],"cruces":["3E","3G","3J","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","G","I","K","L"],"cruces":["3E","3G","3I","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","G","I","J","L"],"cruces":["3E","3G","3J","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","E","G","I","J","K"],"cruces":["3E","3G","3J","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","E","G","H","K","L"],"cruces":["3H","3G","3E","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","G","H","J","L"],"cruces":["3H","3G","3J","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","C","D","E","G","H","J","K"],"cruces":["3H","3G","3J","3C","3A","3D","3E","3K"]},
+    {"grupos":["A","C","D","E","G","H","I","L"],"cruces":["3H","3G","3E","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","E","G","H","I","K"],"cruces":["3H","3G","3E","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","E","G","H","I","J"],"cruces":["3H","3G","3J","3C","3A","3D","3E","3I"]},
+    {"grupos":["A","C","D","E","F","J","K","L"],"cruces":["3C","3J","3E","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","E","F","I","K","L"],"cruces":["3C","3E","3I","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","E","F","I","J","L"],"cruces":["3C","3J","3E","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","C","D","E","F","I","J","K"],"cruces":["3C","3J","3E","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","C","D","E","F","H","K","L"],"cruces":["3H","3E","3F","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","C","D","E","F","H","J","L"],"cruces":["3H","3J","3F","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","C","D","E","F","H","J","K"],"cruces":["3H","3J","3E","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","C","D","E","F","H","I","L"],"cruces":["3H","3E","3F","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","C","D","E","F","H","I","K"],"cruces":["3H","3E","3F","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","C","D","E","F","H","I","J"],"cruces":["3H","3J","3E","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","C","D","E","F","G","K","L"],"cruces":["3C","3G","3E","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","C","D","E","F","G","J","L"],"cruces":["3C","3G","3J","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","C","D","E","F","G","J","K"],"cruces":["3C","3G","3J","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","C","D","E","F","G","I","L"],"cruces":["3C","3G","3E","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","C","D","E","F","G","I","K"],"cruces":["3C","3G","3E","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","C","D","E","F","G","I","J"],"cruces":["3C","3G","3J","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","C","D","E","F","G","H","L"],"cruces":["3H","3G","3F","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","C","D","E","F","G","H","K"],"cruces":["3H","3G","3E","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","C","D","E","F","G","H","J"],"cruces":["3H","3G","3J","3C","3A","3F","3D","3E"]},
+    {"grupos":["A","C","D","E","F","G","H","I"],"cruces":["3H","3G","3E","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","B","G","H","I","J","K","L"],"cruces":["3H","3J","3B","3A","3I","3G","3L","3K"]},
+    {"grupos":["A","B","F","H","I","J","K","L"],"cruces":["3H","3J","3B","3A","3I","3F","3L","3K"]},
+    {"grupos":["A","B","F","G","I","J","K","L"],"cruces":["3I","3J","3B","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","B","F","G","H","J","K","L"],"cruces":["3H","3J","3B","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","B","F","G","H","I","K","L"],"cruces":["3H","3G","3B","3A","3I","3F","3L","3K"]},
+    {"grupos":["A","B","F","G","H","I","J","L"],"cruces":["3H","3J","3B","3F","3A","3G","3L","3I"]},
+    {"grupos":["A","B","F","G","H","I","J","K"],"cruces":["3H","3J","3B","3F","3A","3G","3I","3K"]},
+    {"grupos":["A","B","E","H","I","J","K","L"],"cruces":["3E","3J","3B","3A","3I","3H","3L","3K"]},
+    {"grupos":["A","B","E","G","I","J","K","L"],"cruces":["3E","3J","3B","3A","3I","3G","3L","3K"]},
+    {"grupos":["A","B","E","G","H","J","K","L"],"cruces":["3E","3J","3B","3A","3H","3G","3L","3K"]},
+    {"grupos":["A","B","E","G","H","I","K","L"],"cruces":["3E","3G","3B","3A","3I","3H","3L","3K"]},
+    {"grupos":["A","B","E","G","H","I","J","L"],"cruces":["3E","3J","3B","3A","3H","3G","3L","3I"]},
+    {"grupos":["A","B","E","G","H","I","J","K"],"cruces":["3E","3J","3B","3A","3H","3G","3I","3K"]},
+    {"grupos":["A","B","E","F","I","J","K","L"],"cruces":["3E","3J","3B","3A","3I","3F","3L","3K"]},
+    {"grupos":["A","B","E","F","H","J","K","L"],"cruces":["3E","3J","3B","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","B","E","F","H","I","K","L"],"cruces":["3E","3I","3B","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","B","E","F","H","I","J","L"],"cruces":["3E","3J","3B","3F","3A","3H","3L","3I"]},
+    {"grupos":["A","B","E","F","H","I","J","K"],"cruces":["3E","3J","3B","3F","3A","3H","3I","3K"]},
+    {"grupos":["A","B","E","F","G","J","K","L"],"cruces":["3E","3J","3B","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","B","E","F","G","I","K","L"],"cruces":["3E","3G","3B","3A","3I","3F","3L","3K"]},
+    {"grupos":["A","B","E","F","G","I","J","L"],"cruces":["3E","3J","3B","3F","3A","3G","3L","3I"]},
+    {"grupos":["A","B","E","F","G","I","J","K"],"cruces":["3E","3J","3B","3F","3A","3G","3I","3K"]},
+    {"grupos":["A","B","E","F","G","H","K","L"],"cruces":["3E","3G","3B","3F","3A","3H","3L","3K"]},
+    {"grupos":["A","B","E","F","G","H","J","L"],"cruces":["3H","3J","3B","3F","3A","3G","3L","3E"]},
+    {"grupos":["A","B","E","F","G","H","J","K"],"cruces":["3H","3J","3B","3F","3A","3G","3E","3K"]},
+    {"grupos":["A","B","E","F","G","H","I","L"],"cruces":["3E","3G","3B","3F","3A","3H","3L","3I"]},
+    {"grupos":["A","B","E","F","G","H","I","K"],"cruces":["3E","3G","3B","3F","3A","3H","3I","3K"]},
+    {"grupos":["A","B","E","F","G","H","I","J"],"cruces":["3H","3J","3B","3F","3A","3G","3E","3I"]},
+    {"grupos":["A","B","D","H","I","J","K","L"],"cruces":["3I","3J","3B","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","B","D","G","I","J","K","L"],"cruces":["3I","3J","3B","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","B","D","G","H","J","K","L"],"cruces":["3H","3J","3B","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","B","D","G","H","I","K","L"],"cruces":["3I","3G","3B","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","B","D","G","H","I","J","L"],"cruces":["3H","3J","3B","3D","3A","3G","3L","3I"]},
+    {"grupos":["A","B","D","G","H","I","J","K"],"cruces":["3H","3J","3B","3D","3A","3G","3I","3K"]},
+    {"grupos":["A","B","D","F","I","J","K","L"],"cruces":["3I","3J","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","F","H","J","K","L"],"cruces":["3H","3J","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","F","H","I","K","L"],"cruces":["3H","3I","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","F","H","I","J","L"],"cruces":["3H","3J","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","D","F","H","I","J","K"],"cruces":["3H","3J","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","D","F","G","J","K","L"],"cruces":["3F","3J","3B","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","B","D","F","G","I","K","L"],"cruces":["3I","3G","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","F","G","I","J","L"],"cruces":["3F","3J","3B","3D","3A","3G","3L","3I"]},
+    {"grupos":["A","B","D","F","G","I","J","K"],"cruces":["3F","3J","3B","3D","3A","3G","3I","3K"]},
+    {"grupos":["A","B","D","F","G","H","K","L"],"cruces":["3H","3G","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","F","G","H","J","L"],"cruces":["3H","3G","3B","3D","3A","3F","3L","3J"]},
+    {"grupos":["A","B","D","F","G","H","J","K"],"cruces":["3H","3G","3B","3D","3A","3F","3J","3K"]},
+    {"grupos":["A","B","D","F","G","H","I","L"],"cruces":["3H","3G","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","D","F","G","H","I","K"],"cruces":["3H","3G","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","D","F","G","H","I","J"],"cruces":["3H","3G","3B","3D","3A","3F","3I","3J"]},
+    {"grupos":["A","B","D","E","I","J","K","L"],"cruces":["3E","3J","3B","3A","3I","3D","3L","3K"]},
+    {"grupos":["A","B","D","E","H","J","K","L"],"cruces":["3E","3J","3B","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","B","D","E","H","I","K","L"],"cruces":["3E","3I","3B","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","B","D","E","H","I","J","L"],"cruces":["3E","3J","3B","3D","3A","3H","3L","3I"]},
+    {"grupos":["A","B","D","E","H","I","J","K"],"cruces":["3E","3J","3B","3D","3A","3H","3I","3K"]},
+    {"grupos":["A","B","D","E","G","J","K","L"],"cruces":["3E","3J","3B","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","B","D","E","G","I","K","L"],"cruces":["3E","3G","3B","3A","3I","3D","3L","3K"]},
+    {"grupos":["A","B","D","E","G","I","J","L"],"cruces":["3E","3J","3B","3D","3A","3G","3L","3I"]},
+    {"grupos":["A","B","D","E","G","I","J","K"],"cruces":["3E","3J","3B","3D","3A","3G","3I","3K"]},
+    {"grupos":["A","B","D","E","G","H","K","L"],"cruces":["3E","3G","3B","3D","3A","3H","3L","3K"]},
+    {"grupos":["A","B","D","E","G","H","J","L"],"cruces":["3H","3J","3B","3D","3A","3G","3L","3E"]},
+    {"grupos":["A","B","D","E","G","H","J","K"],"cruces":["3H","3J","3B","3D","3A","3G","3E","3K"]},
+    {"grupos":["A","B","D","E","G","H","I","L"],"cruces":["3E","3G","3B","3D","3A","3H","3L","3I"]},
+    {"grupos":["A","B","D","E","G","H","I","K"],"cruces":["3E","3G","3B","3D","3A","3H","3I","3K"]},
+    {"grupos":["A","B","D","E","G","H","I","J"],"cruces":["3H","3J","3B","3D","3A","3G","3E","3I"]},
+    {"grupos":["A","B","D","E","F","J","K","L"],"cruces":["3E","3J","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","E","F","I","K","L"],"cruces":["3E","3I","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","E","F","I","J","L"],"cruces":["3E","3J","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","D","E","F","I","J","K"],"cruces":["3E","3J","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","D","E","F","H","K","L"],"cruces":["3H","3E","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","E","F","H","J","L"],"cruces":["3H","3J","3B","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","B","D","E","F","H","J","K"],"cruces":["3H","3J","3B","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","B","D","E","F","H","I","L"],"cruces":["3H","3E","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","D","E","F","H","I","K"],"cruces":["3H","3E","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","D","E","F","H","I","J"],"cruces":["3H","3J","3B","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","B","D","E","F","G","K","L"],"cruces":["3E","3G","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","D","E","F","G","J","L"],"cruces":["3E","3G","3B","3D","3A","3F","3L","3J"]},
+    {"grupos":["A","B","D","E","F","G","J","K"],"cruces":["3E","3G","3B","3D","3A","3F","3J","3K"]},
+    {"grupos":["A","B","D","E","F","G","I","L"],"cruces":["3E","3G","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","D","E","F","G","I","K"],"cruces":["3E","3G","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","D","E","F","G","I","J"],"cruces":["3E","3G","3B","3D","3A","3F","3I","3J"]},
+    {"grupos":["A","B","D","E","F","G","H","L"],"cruces":["3H","3G","3B","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","B","D","E","F","G","H","K"],"cruces":["3H","3G","3B","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","B","D","E","F","G","H","J"],"cruces":["3H","3G","3B","3D","3A","3F","3E","3J"]},
+    {"grupos":["A","B","D","E","F","G","H","I"],"cruces":["3H","3G","3B","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","B","C","H","I","J","K","L"],"cruces":["3I","3J","3B","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","B","C","G","I","J","K","L"],"cruces":["3I","3J","3B","3C","3A","3G","3L","3K"]},
+    {"grupos":["A","B","C","G","H","J","K","L"],"cruces":["3H","3J","3B","3C","3A","3G","3L","3K"]},
+    {"grupos":["A","B","C","G","H","I","K","L"],"cruces":["3I","3G","3B","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","B","C","G","H","I","J","L"],"cruces":["3H","3J","3B","3C","3A","3G","3L","3I"]},
+    {"grupos":["A","B","C","G","H","I","J","K"],"cruces":["3H","3J","3B","3C","3A","3G","3I","3K"]},
+    {"grupos":["A","B","C","F","I","J","K","L"],"cruces":["3I","3J","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","F","H","J","K","L"],"cruces":["3H","3J","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","F","H","I","K","L"],"cruces":["3H","3I","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","F","H","I","J","L"],"cruces":["3H","3J","3B","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","F","H","I","J","K"],"cruces":["3H","3J","3B","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","F","G","J","K","L"],"cruces":["3C","3J","3B","3F","3A","3G","3L","3K"]},
+    {"grupos":["A","B","C","F","G","I","K","L"],"cruces":["3I","3G","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","F","G","I","J","L"],"cruces":["3C","3J","3B","3F","3A","3G","3L","3I"]},
+    {"grupos":["A","B","C","F","G","I","J","K"],"cruces":["3C","3J","3B","3F","3A","3G","3I","3K"]},
+    {"grupos":["A","B","C","F","G","H","K","L"],"cruces":["3H","3G","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","F","G","H","J","L"],"cruces":["3H","3G","3B","3C","3A","3F","3L","3J"]},
+    {"grupos":["A","B","C","F","G","H","J","K"],"cruces":["3H","3G","3B","3C","3A","3F","3J","3K"]},
+    {"grupos":["A","B","C","F","G","H","I","L"],"cruces":["3H","3G","3B","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","F","G","H","I","K"],"cruces":["3H","3G","3B","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","F","G","H","I","J"],"cruces":["3H","3G","3B","3C","3A","3F","3I","3J"]},
+    {"grupos":["A","B","C","E","I","J","K","L"],"cruces":["3E","3J","3B","3A","3I","3C","3L","3K"]},
+    {"grupos":["A","B","C","E","H","J","K","L"],"cruces":["3E","3J","3B","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","B","C","E","H","I","K","L"],"cruces":["3E","3I","3B","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","B","C","E","H","I","J","L"],"cruces":["3E","3J","3B","3C","3A","3H","3L","3I"]},
+    {"grupos":["A","B","C","E","H","I","J","K"],"cruces":["3E","3J","3B","3C","3A","3H","3I","3K"]},
+    {"grupos":["A","B","C","E","G","J","K","L"],"cruces":["3E","3J","3B","3C","3A","3G","3L","3K"]},
+    {"grupos":["A","B","C","E","G","I","K","L"],"cruces":["3E","3G","3B","3A","3I","3C","3L","3K"]},
+    {"grupos":["A","B","C","E","G","I","J","L"],"cruces":["3E","3J","3B","3C","3A","3G","3L","3I"]},
+    {"grupos":["A","B","C","E","G","I","J","K"],"cruces":["3E","3J","3B","3C","3A","3G","3I","3K"]},
+    {"grupos":["A","B","C","E","G","H","K","L"],"cruces":["3E","3G","3B","3C","3A","3H","3L","3K"]},
+    {"grupos":["A","B","C","E","G","H","J","L"],"cruces":["3H","3J","3B","3C","3A","3G","3L","3E"]},
+    {"grupos":["A","B","C","E","G","H","J","K"],"cruces":["3H","3J","3B","3C","3A","3G","3E","3K"]},
+    {"grupos":["A","B","C","E","G","H","I","L"],"cruces":["3E","3G","3B","3C","3A","3H","3L","3I"]},
+    {"grupos":["A","B","C","E","G","H","I","K"],"cruces":["3E","3G","3B","3C","3A","3H","3I","3K"]},
+    {"grupos":["A","B","C","E","G","H","I","J"],"cruces":["3H","3J","3B","3C","3A","3G","3E","3I"]},
+    {"grupos":["A","B","C","E","F","J","K","L"],"cruces":["3E","3J","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","E","F","I","K","L"],"cruces":["3E","3I","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","E","F","I","J","L"],"cruces":["3E","3J","3B","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","E","F","I","J","K"],"cruces":["3E","3J","3B","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","E","F","H","K","L"],"cruces":["3H","3E","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","E","F","H","J","L"],"cruces":["3H","3J","3B","3C","3A","3F","3L","3E"]},
+    {"grupos":["A","B","C","E","F","H","J","K"],"cruces":["3H","3J","3B","3C","3A","3F","3E","3K"]},
+    {"grupos":["A","B","C","E","F","H","I","L"],"cruces":["3H","3E","3B","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","E","F","H","I","K"],"cruces":["3H","3E","3B","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","E","F","H","I","J"],"cruces":["3H","3J","3B","3C","3A","3F","3E","3I"]},
+    {"grupos":["A","B","C","E","F","G","K","L"],"cruces":["3E","3G","3B","3C","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","E","F","G","J","L"],"cruces":["3E","3G","3B","3C","3A","3F","3L","3J"]},
+    {"grupos":["A","B","C","E","F","G","J","K"],"cruces":["3E","3G","3B","3C","3A","3F","3J","3K"]},
+    {"grupos":["A","B","C","E","F","G","I","L"],"cruces":["3E","3G","3B","3C","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","E","F","G","I","K"],"cruces":["3E","3G","3B","3C","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","E","F","G","I","J"],"cruces":["3E","3G","3B","3C","3A","3F","3I","3J"]},
+    {"grupos":["A","B","C","E","F","G","H","L"],"cruces":["3H","3G","3B","3C","3A","3F","3L","3E"]},
+    {"grupos":["A","B","C","E","F","G","H","K"],"cruces":["3H","3G","3B","3C","3A","3F","3E","3K"]},
+    {"grupos":["A","B","C","E","F","G","H","J"],"cruces":["3H","3G","3B","3C","3A","3F","3E","3J"]},
+    {"grupos":["A","B","C","E","F","G","H","I"],"cruces":["3H","3G","3B","3C","3A","3F","3E","3I"]},
+    {"grupos":["A","B","C","D","I","J","K","L"],"cruces":["3I","3J","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","H","J","K","L"],"cruces":["3H","3J","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","H","I","K","L"],"cruces":["3H","3I","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","H","I","J","L"],"cruces":["3H","3J","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","H","I","J","K"],"cruces":["3H","3J","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","G","J","K","L"],"cruces":["3C","3J","3B","3D","3A","3G","3L","3K"]},
+    {"grupos":["A","B","C","D","G","I","K","L"],"cruces":["3I","3G","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","G","I","J","L"],"cruces":["3C","3J","3B","3D","3A","3G","3L","3I"]},
+    {"grupos":["A","B","C","D","G","I","J","K"],"cruces":["3C","3J","3B","3D","3A","3G","3I","3K"]},
+    {"grupos":["A","B","C","D","G","H","K","L"],"cruces":["3H","3G","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","G","H","J","L"],"cruces":["3H","3G","3B","3C","3A","3D","3L","3J"]},
+    {"grupos":["A","B","C","D","G","H","J","K"],"cruces":["3H","3G","3B","3C","3A","3D","3J","3K"]},
+    {"grupos":["A","B","C","D","G","H","I","L"],"cruces":["3H","3G","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","G","H","I","K"],"cruces":["3H","3G","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","G","H","I","J"],"cruces":["3H","3G","3B","3C","3A","3D","3I","3J"]},
+    {"grupos":["A","B","C","D","F","J","K","L"],"cruces":["3C","3J","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","D","F","I","K","L"],"cruces":["3C","3I","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","D","F","I","J","L"],"cruces":["3C","3J","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","D","F","I","J","K"],"cruces":["3C","3J","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","D","F","H","K","L"],"cruces":["3H","3F","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","F","H","J","L"],"cruces":["3C","3J","3B","3D","3A","3F","3L","3H"]},
+    {"grupos":["A","B","C","D","F","H","J","K"],"cruces":["3H","3J","3B","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","B","C","D","F","H","I","L"],"cruces":["3H","3F","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","F","H","I","K"],"cruces":["3H","3F","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","F","H","I","J"],"cruces":["3H","3J","3B","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","B","C","D","F","G","K","L"],"cruces":["3C","3G","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","D","F","G","J","L"],"cruces":["3C","3G","3B","3D","3A","3F","3L","3J"]},
+    {"grupos":["A","B","C","D","F","G","J","K"],"cruces":["3C","3G","3B","3D","3A","3F","3J","3K"]},
+    {"grupos":["A","B","C","D","F","G","I","L"],"cruces":["3C","3G","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","D","F","G","I","K"],"cruces":["3C","3G","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","D","F","G","I","J"],"cruces":["3C","3G","3B","3D","3A","3F","3I","3J"]},
+    {"grupos":["A","B","C","D","F","G","H","L"],"cruces":["3C","3G","3B","3D","3A","3F","3L","3H"]},
+    {"grupos":["A","B","C","D","F","G","H","K"],"cruces":["3H","3G","3B","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","B","C","D","F","G","H","J"],"cruces":["3H","3G","3B","3C","3A","3F","3D","3J"]},
+    {"grupos":["A","B","C","D","F","G","H","I"],"cruces":["3H","3G","3B","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","B","C","D","E","J","K","L"],"cruces":["3E","3J","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","E","I","K","L"],"cruces":["3E","3I","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","E","I","J","L"],"cruces":["3E","3J","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","E","I","J","K"],"cruces":["3E","3J","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","E","H","K","L"],"cruces":["3H","3E","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","E","H","J","L"],"cruces":["3H","3J","3B","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","B","C","D","E","H","J","K"],"cruces":["3H","3J","3B","3C","3A","3D","3E","3K"]},
+    {"grupos":["A","B","C","D","E","H","I","L"],"cruces":["3H","3E","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","E","H","I","K"],"cruces":["3H","3E","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","E","H","I","J"],"cruces":["3H","3J","3B","3C","3A","3D","3E","3I"]},
+    {"grupos":["A","B","C","D","E","G","K","L"],"cruces":["3E","3G","3B","3C","3A","3D","3L","3K"]},
+    {"grupos":["A","B","C","D","E","G","J","L"],"cruces":["3E","3G","3B","3C","3A","3D","3L","3J"]},
+    {"grupos":["A","B","C","D","E","G","J","K"],"cruces":["3E","3G","3B","3C","3A","3D","3J","3K"]},
+    {"grupos":["A","B","C","D","E","G","I","L"],"cruces":["3E","3G","3B","3C","3A","3D","3L","3I"]},
+    {"grupos":["A","B","C","D","E","G","I","K"],"cruces":["3E","3G","3B","3C","3A","3D","3I","3K"]},
+    {"grupos":["A","B","C","D","E","G","I","J"],"cruces":["3E","3G","3B","3C","3A","3D","3I","3J"]},
+    {"grupos":["A","B","C","D","E","G","H","L"],"cruces":["3H","3G","3B","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","B","C","D","E","G","H","K"],"cruces":["3H","3G","3B","3C","3A","3D","3E","3K"]},
+    {"grupos":["A","B","C","D","E","G","H","J"],"cruces":["3H","3G","3B","3C","3A","3D","3E","3J"]},
+    {"grupos":["A","B","C","D","E","G","H","I"],"cruces":["3H","3G","3B","3C","3A","3D","3E","3I"]},
+    {"grupos":["A","B","C","D","E","F","K","L"],"cruces":["3C","3E","3B","3D","3A","3F","3L","3K"]},
+    {"grupos":["A","B","C","D","E","F","J","L"],"cruces":["3C","3J","3B","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","B","C","D","E","F","J","K"],"cruces":["3C","3J","3B","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","B","C","D","E","F","I","L"],"cruces":["3C","3E","3B","3D","3A","3F","3L","3I"]},
+    {"grupos":["A","B","C","D","E","F","I","K"],"cruces":["3C","3E","3B","3D","3A","3F","3I","3K"]},
+    {"grupos":["A","B","C","D","E","F","I","J"],"cruces":["3C","3J","3B","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","B","C","D","E","F","H","L"],"cruces":["3H","3F","3B","3C","3A","3D","3L","3E"]},
+    {"grupos":["A","B","C","D","E","F","H","K"],"cruces":["3H","3E","3B","3C","3A","3F","3D","3K"]},
+    {"grupos":["A","B","C","D","E","F","H","J"],"cruces":["3H","3J","3B","3C","3A","3F","3D","3E"]},
+    {"grupos":["A","B","C","D","E","F","H","I"],"cruces":["3H","3E","3B","3C","3A","3F","3D","3I"]},
+    {"grupos":["A","B","C","D","E","F","G","L"],"cruces":["3C","3G","3B","3D","3A","3F","3L","3E"]},
+    {"grupos":["A","B","C","D","E","F","G","K"],"cruces":["3C","3G","3B","3D","3A","3F","3E","3K"]},
+    {"grupos":["A","B","C","D","E","F","G","J"],"cruces":["3C","3G","3B","3D","3A","3F","3E","3J"]},
+    {"grupos":["A","B","C","D","E","F","G","I"],"cruces":["3C","3G","3B","3D","3A","3F","3E","3I"]},
+    {"grupos":["A","B","C","D","E","F","G","H"],"cruces":["3H","3G","3B","3C","3A","3F","3D","3E"]},
+]# ── Lógica de clasificación: fase de grupos y eliminatorias ──────────────────
+#
+# Fuente verificada: Wikipedia (en) "2026 FIFA World Cup knockout stage",
+# que cita el Reglamento Oficial FIFA World Cup 26 (Annex C).
+#
+# Estructura de 16avos (orden = índice en LIDERES_DEPENDIENTES):
+#   Match 73: 2A vs 2B
+#   Match 74: 1E vs Mejor 3° (A/B/C/D/F)
+#   Match 75: 1F vs 2C
+#   Match 76: 1C vs 2F
+#   Match 77: 1I vs Mejor 3° (C/D/F/G/H)
+#   Match 78: 2E vs 2I
+#   Match 79: 1A vs Mejor 3° (C/E/F/H/I)
+#   Match 80: 1L vs Mejor 3° (E/H/I/J/K)
+#   Match 81: 1D vs Mejor 3° (B/E/F/I/J)
+#   Match 82: 1G vs Mejor 3° (A/E/H/I/J)
+#   Match 83: 2K vs 2L
+#   Match 84: 1H vs 2J
+#   Match 85: 1B vs Mejor 3° (E/F/G/I/J)
+#   Match 86: 1J vs 2H
+#   Match 87: 1K vs Mejor 3° (D/E/I/J/L)
+#   Match 88: 2D vs 2G
+
+# Los 8 líderes de grupo que dependen de la matriz de 495 combinaciones,
+# en el ORDEN exacto en que aparecen las columnas "cruces" de cada combinación:
+LIDERES_DEPENDIENTES = ["A", "B", "D", "E", "G", "I", "K", "L"]
+
+# Mapeo de cada líder dependiente a su partido_id de 16avos
+PARTIDO_POR_LIDER = {
+    "A": "P079",
+    "B": "P085",
+    "D": "P081",
+    "E": "P074",
+    "G": "P082",
+    "I": "P077",
+    "K": "P087",
+    "L": "P080",
+}
+
+# Partidos de 16avos con cruces ESTRUCTURALMENTE FIJOS (no dependen de terceros)
+CRUCES_FIJOS_16AVOS = {
+    "P073": ("2°", "A", "2°", "B"),
+    "P075": ("1°", "F", "2°", "C"),
+    "P076": ("1°", "C", "2°", "F"),
+    "P078": ("2°", "E", "2°", "I"),
+    "P083": ("2°", "K", "2°", "L"),
+    "P084": ("1°", "H", "2°", "J"),
+    "P086": ("1°", "J", "2°", "H"),
+    "P088": ("2°", "D", "2°", "G"),
+}
+
+# Bracket completo de octavos en adelante (gana_de = partido_id del que sale el ganador)
+BRACKET_OCTAVOS = {
+    "P089": ("P074", "P077"),
+    "P090": ("P073", "P075"),
+    "P091": ("P076", "P078"),
+    "P092": ("P079", "P080"),
+    "P093": ("P083", "P084"),
+    "P094": ("P081", "P082"),
+    "P095": ("P086", "P088"),
+    "P096": ("P085", "P087"),
+}
+BRACKET_CUARTOS = {
+    "P097": ("P089", "P090"),
+    "P098": ("P093", "P094"),
+    "P099": ("P091", "P092"),
+    "P100": ("P095", "P096"),
+}
+BRACKET_SEMIS = {
+    "P101": ("P097", "P098"),
+    "P102": ("P099", "P100"),
+}
+BRACKET_FINAL = {
+    "P103": ("perdedor", "P101", "P102"),  # 3er puesto
+    "P104": ("ganador", "P101", "P102"),   # final
+}
+
+
+def calcular_tabla_grupo(part_df, res_df, grupo):
+    """
+    Calcula la tabla de un grupo específico: PJ, G, E, P, GF, GC, DG, Pts.
+    Solo considera partidos de fase 'Grupos' ya jugados.
+    Retorna lista de dicts ordenada por los criterios FIFA de desempate
+    INTRA-GRUPO (puntos, luego enfrentamientos directos, luego DG/GF general).
+    """
+    partidos_grupo = part_df[
+        (part_df.get("grupo") == grupo) &
+        (part_df.get("fase", "Grupos") == "Grupos")
+    ] if "grupo" in part_df.columns else part_df.iloc[0:0]
+
+    equipos = set()
+    if not partidos_grupo.empty:
+        equipos = set(partidos_grupo["local"]) | set(partidos_grupo["visita"])
+
+    tabla = {
+        eq: {"equipo": eq, "PJ": 0, "G": 0, "E": 0, "P": 0,
+             "GF": 0, "GC": 0, "DG": 0, "Pts": 0}
+        for eq in equipos
+    }
+
+    resultados_dict = {}
+    if not res_df.empty:
+        for _, r in res_df.iterrows():
+            if r.get("goles_local") != "" and str(r.get("goles_local")) != "nan":
+                resultados_dict[r["partido_id"]] = (
+                    int(float(r["goles_local"])), int(float(r["goles_visita"]))
+                )
+
+    for _, p in partidos_grupo.iterrows():
+        pid = p["partido_id"]
+        if pid not in resultados_dict:
+            continue
+        gl, gv = resultados_dict[pid]
+        local, visita = p["local"], p["visita"]
+
+        tabla[local]["PJ"] += 1
+        tabla[visita]["PJ"] += 1
+        tabla[local]["GF"] += gl
+        tabla[local]["GC"] += gv
+        tabla[visita]["GF"] += gv
+        tabla[visita]["GC"] += gl
+
+        if gl > gv:
+            tabla[local]["G"] += 1
+            tabla[local]["Pts"] += 3
+            tabla[visita]["P"] += 1
+        elif gl < gv:
+            tabla[visita]["G"] += 1
+            tabla[visita]["Pts"] += 3
+            tabla[local]["P"] += 1
+        else:
+            tabla[local]["E"] += 1
+            tabla[visita]["E"] += 1
+            tabla[local]["Pts"] += 1
+            tabla[visita]["Pts"] += 1
+
+    for eq in tabla:
+        tabla[eq]["DG"] = tabla[eq]["GF"] - tabla[eq]["GC"]
+
+    filas = list(tabla.values())
+
+    # Desempate simplificado: Pts -> DG -> GF -> alfabético (estable)
+    # (enfrentamientos directos requerirían más granularidad; se documenta
+    # la limitación en la UI)
+    filas.sort(key=lambda x: (-x["Pts"], -x["DG"], -x["GF"], x["equipo"]))
+
+    return filas
+
+
+def calcular_todas_las_tablas(part_df, res_df):
+    """Retorna dict {grupo: [tabla ordenada]} para todos los grupos detectados."""
+    if "grupo" not in part_df.columns:
+        return {}
+    grupos = sorted(g for g in part_df["grupo"].dropna().unique() if g)
+    return {g: calcular_tabla_grupo(part_df, res_df, g) for g in grupos}
+
+
+def calcular_terceros(tablas_grupos):
+    """
+    Construye la tabla general de los 12 terceros lugares, ordenada con
+    los criterios oficiales: Pts -> DG -> GF -> (Fair Play y Ranking FIFA
+    no disponibles con los datos de la app, se documenta la limitación).
+    Solo incluye grupos con al menos 3 equipos y datos completos.
+    """
+    terceros = []
+    for grupo, tabla in tablas_grupos.items():
+        if len(tabla) >= 3:
+            tercero = dict(tabla[2])
+            tercero["grupo"] = grupo
+            terceros.append(tercero)
+
+    terceros.sort(key=lambda x: (-x["Pts"], -x["DG"], -x["GF"], x["grupo"]))
+    return terceros
+
+
+def mejores_ocho_terceros(terceros):
+    """Retorna (mejores_8, grupos_ordenados_alfabeticamente)."""
+    mejores = terceros[:8]
+    grupos = sorted(t["grupo"] for t in mejores)
+    return mejores, grupos
+
+
+def resolver_combinacion(grupos_terceros_clasificados):
+    """
+    Busca en las 495 combinaciones cuál corresponde a la lista de 8 grupos
+    cuyo tercer lugar avanzó. Retorna el dict de la combinación o None.
+    """
+    objetivo = sorted(grupos_terceros_clasificados)
+    for combo in COMBINACIONES_495:
+        if sorted(combo["grupos"]) == objetivo:
+            return combo
+    return None
+
+
+def construir_cruces_16avos(tablas_grupos, terceros_clasificados_grupos, combinacion):
+    """
+    Construye el diccionario partido_id -> (equipo_local, equipo_visita)
+    usando los primeros/segundos reales (si ya están definidos) y la
+    combinación de terceros resuelta.
+
+    Si un grupo aún no tiene 3 partidos jugados, el primer/segundo lugar
+    se muestra como provisional con la etiqueta correspondiente.
+    """
+    cruces = {}
+
+    def equipo_1ro(grupo):
+        t = tablas_grupos.get(grupo, [])
+        return t[0]["equipo"] if len(t) >= 1 else f"1° Grupo {grupo}"
+
+    def equipo_2do(grupo):
+        t = tablas_grupos.get(grupo, [])
+        return t[1]["equipo"] if len(t) >= 2 else f"2° Grupo {grupo}"
+
+    # Cruces fijos
+    for pid, (pos_l, grp_l, pos_v, grp_v) in CRUCES_FIJOS_16AVOS.items():
+        local = equipo_1ro(grp_l) if pos_l == "1°" else equipo_2do(grp_l)
+        visita = equipo_1ro(grp_v) if pos_v == "1°" else equipo_2do(grp_v)
+        cruces[pid] = (local, visita, f"{pos_l}{grp_l}", f"{pos_v}{grp_v}")
+
+    # Cruces dependientes de terceros
+    if combinacion:
+        for i, lider_grupo in enumerate(LIDERES_DEPENDIENTES):
+            pid = PARTIDO_POR_LIDER[lider_grupo]
+            rival_tag = combinacion["cruces"][i]  # ej "3E"
+            grupo_tercero = rival_tag[1:]  # "E"
+
+            local = equipo_1ro(lider_grupo)
+            visita_label = f"3° Grupo {grupo_tercero}"
+
+            # Si tenemos el equipo real del tercero clasificado
+            tabla_g = tablas_grupos.get(grupo_tercero, [])
+            if len(tabla_g) >= 3:
+                visita_label = tabla_g[2]["equipo"]
+
+            cruces[pid] = (local, visita_label, f"1°{lider_grupo}", f"3°{grupo_tercero}")
+    else:
+        # Combinación no resuelta aún (terceros incompletos): mostrar genérico
+        for lider_grupo in LIDERES_DEPENDIENTES:
+            pid = PARTIDO_POR_LIDER[lider_grupo]
+            local = equipo_1ro(lider_grupo)
+            cruces[pid] = (local, "Mejor 3° (pendiente)", f"1°{lider_grupo}", "3°?")
+
+    return cruces
+
+
+def nombre_ganador(partido_id, res_df, cruces_16avos=None, etiquetas_bracket=None):
+    """
+    Dado un partido_id de cualquier ronda, retorna el nombre del equipo
+    ganador si el partido ya tiene resultado, o None si no se ha jugado.
+    """
+    if res_df.empty:
+        return None
+    fila = res_df[res_df["partido_id"] == partido_id]
+    if fila.empty:
+        return None
+    gl, gv = fila.iloc[0].get("goles_local"), fila.iloc[0].get("goles_visita")
+    if gl == "" or str(gl) == "nan":
+        return None
+    # En eliminatorias no hay empate (se asume que el dato ya refleja
+    # el resultado final, incluyendo penales si aplicó)
+    try:
+        gl, gv = int(float(gl)), int(float(gv))
+    except (ValueError, TypeError):
+        return None
+    if gl == gv:
+        return None  # dato incompleto para eliminatoria
+
+    if etiquetas_bracket and partido_id in etiquetas_bracket:
+        local_nombre, visita_nombre = etiquetas_bracket[partido_id]
+    else:
+        return None
+
+    return local_nombre if gl > gv else visita_nombre
 
 
 # ── UI helpers ───────────────────────────────────────────────────────────────
@@ -321,7 +1153,7 @@ client_email = "..."
         st.error(f"❌ Error al conectar con Google Sheets: {e}")
         return
 
-    rank_df, det_df = calcular_ranking(pred_df, res_df)
+    rank_df, det_df = calcular_ranking(pred_df, res_df, part_df)
 
     # ── Métricas superiores ───────────────────────────────────────────────
     partidos_jugados = len(
@@ -330,7 +1162,30 @@ client_email = "..."
     total_partidos   = len(part_df) if not part_df.empty else 0
     total_participantes = pred_df["participante"].nunique() if not pred_df.empty else 0
 
-    c1, c2, c3, c4 = st.columns(4)
+    # % de puntos jugados vs el total posible del mundial.
+    # "Puntaje máximo por partido" = 10 (Grupos) o 20 (16avos en adelante).
+    # Jugados = suma de máximos de partidos con resultado cargado.
+    # Total   = suma de máximos de TODOS los partidos del torneo.
+    pct_puntos_jugados = 0.0
+    puntos_jugados_max = 0
+    puntos_totales_max = 0
+    if not part_df.empty:
+        fase_col_metric = [c for c in part_df.columns if "fase" in c.lower()]
+        fase_series = part_df[fase_col_metric[0]] if fase_col_metric else pd.Series([None] * len(part_df))
+        maximos_por_partido = fase_series.apply(lambda f: 10 * _multiplicador_por_fase(f))
+        puntos_totales_max = int(maximos_por_partido.sum())
+
+        if not res_df.empty:
+            ids_jugados = set(
+                res_df[(res_df["goles_local"] != "") & (res_df["goles_local"].notna())]["partido_id"]
+            )
+            mask_jugados = part_df["partido_id"].isin(ids_jugados)
+            puntos_jugados_max = int(maximos_por_partido[mask_jugados].sum())
+
+        if puntos_totales_max > 0:
+            pct_puntos_jugados = (puntos_jugados_max / puntos_totales_max) * 100
+
+    c1, c2, c3, c4, c5 = st.columns(5)
     with c1:
         st.markdown(f"""<div class="metric-card">
             <div class="label">Participantes</div>
@@ -353,11 +1208,16 @@ client_email = "..."
             <div class="label">Puntos del líder</div>
             <div class="value">{top_pts}</div>
         </div>""", unsafe_allow_html=True)
+    with c5:
+        st.markdown(f"""<div class="metric-card">
+            <div class="label">% puntos jugados</div>
+            <div class="value">{pct_puntos_jugados:.1f}%</div>
+        </div>""", unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día", "📊 Fase de Grupos", "🏟️ Eliminatorias"])
 
     with tab1:
         st.markdown("### Clasificación general")
@@ -479,18 +1339,18 @@ client_email = "..."
             df_p = pred_df[pred_df["participante"] == sel].copy()
 
             if not part_df.empty and "partido_id" in part_df.columns:
+                fase_col_p3 = [c for c in part_df.columns if "fase" in c.lower()]
+                cols_merge_p3 = ["partido_id", "local", "visita", "fecha",
+                                  part_df.columns[part_df.columns.str.contains("hora")].tolist()[0]
+                                  if any(part_df.columns.str.contains("hora")) else "fecha"]
+                cols_merge_p3 += fase_col_p3
                 df_p = df_p.merge(
-                    part_df[["partido_id", "local", "visita", "fecha",
-                              part_df.columns[part_df.columns.str.contains("hora")].tolist()[0]
-                              if any(part_df.columns.str.contains("hora")) else "fecha"]],
+                    part_df[cols_merge_p3],
                     on="partido_id", how="left"
                 )
 
-            # Máscara: ocultar predicciones de partidos aún bloqueados
-            # para participantes que no son el seleccionado por "uno mismo"
-            # (aquí mostramos un candado en lugar del marcador)
             st.markdown(
-                "<p style='color:#8891b4; font-size:13px;'>🔒 Las predicciones se revelan 10 minutos antes de cada partido.</p>",
+                "<p style='color:#8891b4; font-size:13px;'>🔒 Las predicciones se revelan 10 minutos antes de cada partido. Haz clic en un partido para ver el desglose de puntos.</p>",
                 unsafe_allow_html=True
             )
 
@@ -501,54 +1361,93 @@ client_email = "..."
                     if r.get("goles_local") != "" and r.get("goles_visita") != "" and str(r.get("goles_local")) != "nan":
                         resultados_dict_p3[r["partido_id"]] = (r["goles_local"], r["goles_visita"])
 
-            rows_html = ""
             for _, row in df_p.iterrows():
                 desbloqueado = partido_desbloqueado(row["partido_id"])
                 local   = row.get("local",   row["partido_id"])
                 visita  = row.get("visita",  "")
                 fecha   = row.get("fecha",   "")
 
-                puntos_html = '<span style="color:#6b7280;">—</span>'
+                tiene_resultado = row["partido_id"] in resultados_dict_p3
+                sin_enviar = row.get("pred_local") == "" or row.get("pred_visita") == ""
 
-                if desbloqueado:
-                    if row.get("pred_local") == "" or row.get("pred_visita") == "":
-                        pred = '<span style="color:#6b7280;">Sin enviar</span>'
-                        estado = '<span style="color:#f97316; font-size:12px;">⚠️ No registró</span>'
-                    else:
-                        pred = f'<span class="score-chip">{int(row["pred_local"])}-{int(row["pred_visita"])}</span>'
-                        estado = '<span style="color:#4ade80; font-size:12px;">🔓 Visible</span>'
-
-                        if row["partido_id"] in resultados_dict_p3:
-                            rl, rv = resultados_dict_p3[row["partido_id"]]
-                            pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
-                            puntos_html = f'<span class="pts-badge">{pts} pts</span>' if pts > 0 else '<span class="pts-zero">0 pts</span>'
+                # ── Etiqueta del expander (resumen visible sin hacer clic) ──
+                if not desbloqueado:
+                    pred_txt = "🔒"
+                    resultado_txt = ""
+                    pts_txt = ""
+                elif sin_enviar:
+                    pred_txt = "Sin enviar"
+                    resultado_txt = ""
+                    pts_txt = ""
                 else:
-                    pred = '<span style="color:#6b7280; font-size:18px;">🔒</span>'
-                    estado = '<span style="color:#6b7280; font-size:12px;">Bloqueado</span>'
+                    pred_txt = f"{int(row['pred_local'])}-{int(row['pred_visita'])}"
+                    if tiene_resultado:
+                        rl, rv = resultados_dict_p3[row["partido_id"]]
+                        resultado_txt = f"Real: {int(rl)}-{int(rv)}"
+                        mult_p3 = _multiplicador_por_fase(row.get("fase"))
+                        pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
+                        pts_txt = f"{pts} pts" if mult_p3 == 1 else f"{pts} pts (x2)"
+                    else:
+                        resultado_txt = "Aún no jugado"
+                        pts_txt = ""
 
-                rows_html += f"""
-                <tr>
-                    <td style="color:#8891b4;">{fecha}</td>
-                    <td style="color:#ffffff; font-weight:500;">{local} vs {visita}</td>
-                    <td style="text-align:center;">{pred}</td>
-                    <td style="text-align:center;">{estado}</td>
-                    <td style="text-align:center;">{puntos_html}</td>
-                </tr>"""
+                etiqueta = f"**{fecha}** · {local} vs {visita}  —  Predicción: **{pred_txt}**"
+                if resultado_txt:
+                    etiqueta += f"  ·  {resultado_txt}"
+                if pts_txt:
+                    etiqueta += f"  ·  🏆 **{pts_txt}**"
 
-            st.markdown(f"""
-            <table style="width:100%; border-collapse:collapse; margin-top:12px;">
-                <thead>
-                    <tr style="border-bottom: 1px solid #2a3060;">
-                        <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Fecha</th>
-                        <th style="padding:10px 16px; text-align:left; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Partido</th>
-                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Predicción</th>
-                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Estado</th>
-                        <th style="padding:10px 16px; text-align:center; color:#8891b4; font-size:11px; text-transform:uppercase; letter-spacing:1px;">Puntos</th>
-                    </tr>
-                </thead>
-                <tbody>{rows_html}</tbody>
-            </table>
-            """, unsafe_allow_html=True)
+                with st.expander(etiqueta):
+                    if not desbloqueado:
+                        st.markdown(
+                            '<span style="color:#6b7280; font-size:13px;">🔒 Esta predicción se revela 10 minutos antes del partido.</span>',
+                            unsafe_allow_html=True
+                        )
+                    elif sin_enviar:
+                        st.markdown(
+                            '<span style="color:#f97316; font-size:13px;">⚠️ Este participante no registró predicción para este partido.</span>',
+                            unsafe_allow_html=True
+                        )
+                    elif not tiene_resultado:
+                        st.markdown(
+                            '<span style="color:#6b7280; font-size:13px;">El partido aún no se ha jugado, así que no hay puntos que desglosar todavía.</span>',
+                            unsafe_allow_html=True
+                        )
+                    else:
+                        rl, rv = resultados_dict_p3[row["partido_id"]]
+                        mult_p3 = _multiplicador_por_fase(row.get("fase"))
+                        desglose = _desglose_puntos(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
+
+                        if mult_p3 == 2:
+                            st.markdown(
+                                '<span style="background:#3d2a00; color:#fbbf24; border-radius:6px; padding:2px 10px; font-size:11px; font-weight:600;">⚡ Fase eliminatoria · puntos x2</span>',
+                                unsafe_allow_html=True
+                            )
+
+                        filas_desglose = ""
+                        for etiqueta_item, valor, acertado in desglose:
+                            icono = "✅" if acertado else "❌"
+                            color_pts = "#4ade80" if acertado else "#6b7280"
+                            pts_mostrados = valor if acertado else 0
+                            filas_desglose += f"""
+                            <tr>
+                                <td style="padding:6px 12px; color:#e0e4f4;">{icono} {etiqueta_item}</td>
+                                <td style="padding:6px 12px; text-align:right; color:{color_pts}; font-weight:600;">+{pts_mostrados} pts</td>
+                            </tr>"""
+
+                        total_pts = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_p3)
+
+                        st.markdown(f"""
+                        <table style="width:100%; border-collapse:collapse;">
+                            <tbody>{filas_desglose}</tbody>
+                            <tfoot>
+                                <tr style="border-top:1px solid #2a3060;">
+                                    <td style="padding:8px 12px; font-weight:700; color:#ffffff;">Total</td>
+                                    <td style="padding:8px 12px; text-align:right; font-weight:700; color:#3b82f6;">{total_pts} pts</td>
+                                </tr>
+                            </tfoot>
+                        </table>
+                        """, unsafe_allow_html=True)
 
     with tab4:
         st.markdown("### Pronósticos por partido")
@@ -608,6 +1507,7 @@ client_email = "..."
                 if pred_partido.empty:
                     st.info("Nadie ha ingresado predicciones para este partido.")
                 else:
+                    mult_t4 = _multiplicador_por_fase(part_info.get("fase"))
                     rows_html_t4 = ""
                     for _, row in pred_partido.sort_values("participante").iterrows():
                         if row.get("pred_local") == "" or row.get("pred_visita") == "":
@@ -619,7 +1519,7 @@ client_email = "..."
                             pts_badge = ""
                             if resultado_real:
                                 rl, rv = resultado_real.split("-")
-                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
+                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_t4)
                                 pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
 
                         rows_html_t4 += f"""
@@ -790,6 +1690,7 @@ client_email = "..."
                         continue
 
                     rows_html_t6 = ""
+                    mult_t6 = _multiplicador_por_fase(part_info.get("fase"))
                     for _, row in pred_partido_t6.sort_values("participante").iterrows():
                         if row.get("pred_local") == "" or row.get("pred_visita") == "":
                             pred = '<span style="color:#6b7280;">Sin enviar</span>'
@@ -800,7 +1701,7 @@ client_email = "..."
                             pts_badge = ""
                             if resultado_real_t6:
                                 rl, rv = resultado_real_t6.split("-")
-                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv)
+                                p = _puntos_limpio(row["pred_local"], row["pred_visita"], rl, rv, mult_t6)
                                 pts_badge = f'<span class="pts-badge">{p} pts</span>' if p > 0 else '<span class="pts-zero">0 pts</span>'
 
                         rows_html_t6 += f"""
@@ -821,6 +1722,262 @@ client_email = "..."
                         </thead>
                         <tbody>{rows_html_t6}</tbody>
                     </table>
+                    """, unsafe_allow_html=True)
+
+    with tab7:
+        st.markdown("### Fase de Grupos")
+        st.markdown(
+            "<p style='color:#8891b4; font-size:13px;'>Clasificación calculada con los resultados cargados. "
+            "Desempate: Puntos → Diferencia de gol → Goles a favor. "
+            "<span style='color:#f97316;'>No incluye enfrentamientos directos, Fair Play ni Ranking FIFA</span> "
+            "(no disponibles con los datos de esta app) — en empates muy cerrados el orden real de FIFA podría variar.</p>",
+            unsafe_allow_html=True
+        )
+
+        if part_df.empty or "grupo" not in part_df.columns:
+            st.info("No hay datos de grupos cargados.")
+        else:
+            tablas_grupos = calcular_todas_las_tablas(part_df, res_df)
+
+            if not tablas_grupos:
+                st.info("No hay grupos detectados en la hoja Partidos.")
+            else:
+                grupos_lista = sorted(tablas_grupos.keys())
+                cols_por_fila = 2
+                for i in range(0, len(grupos_lista), cols_por_fila):
+                    cols = st.columns(cols_por_fila)
+                    for j, grupo in enumerate(grupos_lista[i:i+cols_por_fila]):
+                        with cols[j]:
+                            tabla = tablas_grupos[grupo]
+                            st.markdown(f"""
+                            <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:10px;
+                                        padding:6px 14px 12px; margin-bottom:16px;">
+                                <div style="font-size:14px; font-weight:700; color:#ffffff; margin:8px 0 8px;">
+                                    Grupo {grupo}
+                                </div>
+                            """, unsafe_allow_html=True)
+
+                            rows_html_g = ""
+                            for pos, eq in enumerate(tabla, 1):
+                                color_pos = "#4ade80" if pos <= 2 else ("#fbbf24" if pos == 3 else "#6b7280")
+                                rows_html_g += f"""
+                                <tr>
+                                    <td style="color:{color_pos}; font-weight:700; width:20px;">{pos}</td>
+                                    <td style="color:#ffffff; font-weight:500;">{eq['equipo']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['PJ']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['G']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['E']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['P']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['GF']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['GC']}</td>
+                                    <td style="text-align:center; color:#8891b4;">{eq['DG']:+d}</td>
+                                    <td style="text-align:center; color:#3b82f6; font-weight:700;">{eq['Pts']}</td>
+                                </tr>"""
+
+                            st.markdown(f"""
+                                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                                    <thead>
+                                        <tr style="border-bottom:1px solid #2a3060; color:#6b7280; font-size:10px; text-transform:uppercase;">
+                                            <th></th><th style="text-align:left;">Equipo</th>
+                                            <th>PJ</th><th>G</th><th>E</th><th>P</th>
+                                            <th>GF</th><th>GC</th><th>DG</th><th>Pts</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>{rows_html_g}</tbody>
+                                </table>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+    with tab8:
+        st.markdown("### Eliminatorias")
+        st.markdown(
+            "<p style='color:#8891b4; font-size:13px;'>Estructura oficial verificada del Mundial 2026 "
+            "(Reglamento FIFA, Anexo C). Los cruces con terceros lugares se resuelven automáticamente "
+            "usando las 495 combinaciones oficiales una vez que se conocen los 8 mejores terceros.</p>",
+            unsafe_allow_html=True
+        )
+
+        if part_df.empty or "grupo" not in part_df.columns:
+            st.info("No hay datos de grupos cargados.")
+        else:
+            tablas_grupos = calcular_todas_las_tablas(part_df, res_df)
+            terceros = calcular_terceros(tablas_grupos)
+
+            if not terceros:
+                st.info("Aún no hay suficientes partidos jugados para calcular terceros lugares.")
+            else:
+                st.markdown("#### Tabla general de terceros lugares")
+                st.markdown(
+                    "<p style='color:#8891b4; font-size:12px;'>Los 8 mejores (✅) clasifican a 16avos. "
+                    "Desempate disponible: Puntos → DG → GF (no incluye Fair Play ni Ranking FIFA).</p>",
+                    unsafe_allow_html=True
+                )
+
+                rows_html_3 = ""
+                for i, t in enumerate(terceros, 1):
+                    clasifica = i <= 8
+                    badge = '<span style="color:#4ade80;">✅</span>' if clasifica else '<span style="color:#6b7280;">❌</span>'
+                    rows_html_3 += f"""
+                    <tr style="{'opacity:0.5;' if not clasifica else ''}">
+                        <td style="text-align:center;">{badge}</td>
+                        <td style="color:#8891b4;">{i}</td>
+                        <td style="color:#ffffff; font-weight:600;">{t['equipo']}</td>
+                        <td style="text-align:center; color:#8891b4;">Grupo {t['grupo']}</td>
+                        <td style="text-align:center; color:#8891b4;">{t['Pts']}</td>
+                        <td style="text-align:center; color:#8891b4;">{t['DG']:+d}</td>
+                        <td style="text-align:center; color:#8891b4;">{t['GF']}</td>
+                    </tr>"""
+
+                st.markdown(f"""
+                <table style="width:100%; border-collapse:collapse; margin-bottom:24px;">
+                    <thead>
+                        <tr style="border-bottom:1px solid #2a3060; color:#6b7280; font-size:11px; text-transform:uppercase;">
+                            <th></th><th>#</th><th style="text-align:left;">Equipo</th>
+                            <th>Grupo</th><th>Pts</th><th>DG</th><th>GF</th>
+                        </tr>
+                    </thead>
+                    <tbody>{rows_html_3}</tbody>
+                </table>
+                """, unsafe_allow_html=True)
+
+                mejores, grupos_clasif = mejores_ocho_terceros(terceros)
+                grupos_completos = all(len(tablas_grupos.get(g, [])) >= 3 and
+                                         tablas_grupos[g][0].get("PJ", 0) == 3
+                                         for g in tablas_grupos)
+
+                combo = resolver_combinacion(grupos_clasif) if len(grupos_clasif) == 8 else None
+
+                if len(grupos_clasif) < 8:
+                    st.warning(f"⚠️ Solo hay {len(grupos_clasif)} grupos con tabla de terceros calculable todavía. "
+                               "Faltan resultados para definir los 8 mejores terceros.")
+                elif combo is None:
+                    st.error("No se encontró una combinación válida en el Anexo C para estos grupos — "
+                             "verifica que los datos de la fase de grupos estén completos.")
+                else:
+                    st.markdown(f"""
+                    <div style="background:#0f2a1a; border:1px solid #1a5c36; border-radius:8px;
+                                padding:10px 16px; margin-bottom:20px; font-size:13px; color:#4ade80;">
+                        ✅ Combinación de terceros resuelta: grupos {', '.join(grupos_clasif)} avanzan.
+                        Cruces de 16avos calculados automáticamente.
+                    </div>
+                    """, unsafe_allow_html=True)
+
+                cruces_16avos = construir_cruces_16avos(tablas_grupos, grupos_clasif, combo)
+
+                # Construir etiquetas para resolver ganadores en rondas siguientes
+                etiquetas_bracket = {pid: (local, visita) for pid, (local, visita, *_ ) in cruces_16avos.items()}
+
+                st.markdown("#### 🏟️ Dieciseisavos de final")
+                hora_col_e = [c for c in part_df.columns if "hora" in c.lower()]
+                orden_pids_16 = ["P073","P074","P075","P076","P077","P078","P079","P080",
+                                  "P081","P082","P083","P084","P085","P086","P087","P088"]
+
+                cols_16 = st.columns(2)
+                for idx, pid in enumerate(orden_pids_16):
+                    if pid not in cruces_16avos:
+                        continue
+                    local, visita, tag_l, tag_v = cruces_16avos[pid]
+                    info_partido = part_df[part_df["partido_id"] == pid]
+                    fecha_p = info_partido.iloc[0]["fecha"] if not info_partido.empty else ""
+                    sede_p = info_partido.iloc[0].get("sede", "") if not info_partido.empty else ""
+
+                    ganador = nombre_ganador(pid, res_df, etiquetas_bracket=etiquetas_bracket)
+                    res_fila = res_df[res_df["partido_id"] == pid] if not res_df.empty else pd.DataFrame()
+                    marcador = ""
+                    if not res_fila.empty and res_fila.iloc[0].get("goles_local") not in ("", None) and str(res_fila.iloc[0].get("goles_local")) != "nan":
+                        gl_e = res_fila.iloc[0]["goles_local"]
+                        gv_e = res_fila.iloc[0]["goles_visita"]
+                        marcador = f"{int(float(gl_e))}-{int(float(gv_e))}"
+
+                    with cols_16[idx % 2]:
+                        local_style = "color:#4ade80; font-weight:700;" if ganador == local else "color:#ffffff; font-weight:500;"
+                        visita_style = "color:#4ade80; font-weight:700;" if ganador == visita else "color:#ffffff; font-weight:500;"
+                        st.markdown(f"""
+                        <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:8px;
+                                    padding:10px 14px; margin-bottom:8px; font-size:13px;">
+                            <div style="color:#6b7280; font-size:10px; margin-bottom:4px;">{pid} · {fecha_p} {sede_p}</div>
+                            <div style="display:flex; justify-content:space-between; align-items:center;">
+                                <span style="{local_style}">{local}</span>
+                                <span style="color:#8891b4; font-family:monospace;">{marcador if marcador else 'vs'}</span>
+                                <span style="{visita_style}">{visita}</span>
+                            </div>
+                        </div>
+                        """, unsafe_allow_html=True)
+
+                # Rondas siguientes: Octavos, Cuartos, Semis, Final
+                def render_ronda(titulo, bracket_dict, pid_origenes):
+                    st.markdown(f"#### {titulo}")
+                    cols_r = st.columns(2)
+                    for idx, (pid, origenes) in enumerate(bracket_dict.items()):
+                        local = nombre_ganador(origenes[0], res_df, etiquetas_bracket=etiquetas_bracket) or f"Ganador {origenes[0]}"
+                        visita = nombre_ganador(origenes[1], res_df, etiquetas_bracket=etiquetas_bracket) or f"Ganador {origenes[1]}"
+                        etiquetas_bracket[pid] = (local, visita)
+
+                        ganador = nombre_ganador(pid, res_df, etiquetas_bracket=etiquetas_bracket)
+                        res_fila = res_df[res_df["partido_id"] == pid] if not res_df.empty else pd.DataFrame()
+                        marcador = ""
+                        if not res_fila.empty and res_fila.iloc[0].get("goles_local") not in ("", None) and str(res_fila.iloc[0].get("goles_local")) != "nan":
+                            gl_e = res_fila.iloc[0]["goles_local"]
+                            gv_e = res_fila.iloc[0]["goles_visita"]
+                            marcador = f"{int(float(gl_e))}-{int(float(gv_e))}"
+
+                        local_style = "color:#4ade80; font-weight:700;" if ganador == local else "color:#ffffff; font-weight:500;"
+                        visita_style = "color:#4ade80; font-weight:700;" if ganador == visita else "color:#ffffff; font-weight:500;"
+
+                        with cols_r[idx % 2]:
+                            st.markdown(f"""
+                            <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:8px;
+                                        padding:10px 14px; margin-bottom:8px; font-size:13px;">
+                                <div style="color:#6b7280; font-size:10px; margin-bottom:4px;">{pid}</div>
+                                <div style="display:flex; justify-content:space-between; align-items:center;">
+                                    <span style="{local_style}">{local}</span>
+                                    <span style="color:#8891b4; font-family:monospace;">{marcador if marcador else 'vs'}</span>
+                                    <span style="{visita_style}">{visita}</span>
+                                </div>
+                            </div>
+                            """, unsafe_allow_html=True)
+
+                render_ronda("⚔️ Octavos de final", BRACKET_OCTAVOS, orden_pids_16)
+                render_ronda("🔥 Cuartos de final", BRACKET_CUARTOS, list(BRACKET_OCTAVOS.keys()))
+                render_ronda("🌟 Semifinales", BRACKET_SEMIS, list(BRACKET_CUARTOS.keys()))
+
+                # Final y 3er puesto
+                st.markdown("#### 🏆 Final y 3er Puesto")
+                cols_f = st.columns(2)
+
+                ganador_101 = nombre_ganador("P101", res_df, etiquetas_bracket=etiquetas_bracket)
+                ganador_102 = nombre_ganador("P102", res_df, etiquetas_bracket=etiquetas_bracket)
+                local_101, visita_101 = etiquetas_bracket.get("P101", ("Ganador P97", "Ganador P98"))
+                local_102, visita_102 = etiquetas_bracket.get("P102", ("Ganador P99", "Ganador P100"))
+
+                perdedor_101 = (visita_101 if ganador_101 == local_101 else local_101) if ganador_101 else "Perdedor SF1"
+                perdedor_102 = (visita_102 if ganador_102 == local_102 else local_102) if ganador_102 else "Perdedor SF2"
+                final_local = ganador_101 or "Ganador SF1"
+                final_visita = ganador_102 or "Ganador SF2"
+
+                with cols_f[0]:
+                    st.markdown(f"""
+                    <div style="background:#1a1f3a; border:1px solid #2a3060; border-radius:8px;
+                                padding:10px 14px; margin-bottom:8px; font-size:13px;">
+                        <div style="color:#6b7280; font-size:10px; margin-bottom:4px;">P103 · 3er Puesto · Miami</div>
+                        <div style="display:flex; justify-content:space-between;">
+                            <span style="color:#ffffff;">{perdedor_101}</span>
+                            <span style="color:#8891b4;">vs</span>
+                            <span style="color:#ffffff;">{perdedor_102}</span>
+                        </div>
+                    </div>
+                    """, unsafe_allow_html=True)
+                with cols_f[1]:
+                    st.markdown(f"""
+                    <div style="background:linear-gradient(135deg,#3d3000,#1a1f3a); border:1px solid #fbbf24; border-radius:8px;
+                                padding:10px 14px; margin-bottom:8px; font-size:13px;">
+                        <div style="color:#fbbf24; font-size:10px; margin-bottom:4px;">P104 · 🏆 FINAL · Nueva Jersey</div>
+                        <div style="display:flex; justify-content:space-between;">
+                            <span style="color:#ffffff; font-weight:600;">{final_local}</span>
+                            <span style="color:#8891b4;">vs</span>
+                            <span style="color:#ffffff; font-weight:600;">{final_visita}</span>
+                        </div>
+                    </div>
                     """, unsafe_allow_html=True)
 
     # Footer
