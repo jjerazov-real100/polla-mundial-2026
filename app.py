@@ -1950,7 +1950,7 @@ client_email = "..."
                     """, unsafe_allow_html=True)
 
     with tab9:
-        st.markdown("### Farolitos del Mundial")
+        st.markdown("### Peores del Mundial")
         st.markdown(
             "<p style='color:#8891b4; font-size:13px;'>El último lugar de cada grupo, ordenado de peor a mejor. "
             "El #1 es el equipo con el rendimiento más flojo de todo el torneo (entre los últimos de su grupo).</p>",
