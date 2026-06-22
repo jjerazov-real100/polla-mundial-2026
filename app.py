@@ -1217,7 +1217,7 @@ client_email = "..."
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs ──────────────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día", "📊 Fase de Grupos", "🏟️ Eliminatorias", "🪦 Farolitos"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8, tab9 = st.tabs(["🏆 Ranking", "⚽ Detalle por partido", "📋 Predicciones", "🔍 Pronósticos por partido", "📅 Calendario", "🗓️ Pronósticos por día", "📊 Fase de Grupos", "🏟️ Eliminatorias", "🪦 Peores"])
 
     with tab1:
         st.markdown("### Clasificación general")
